@@ -17,37 +17,41 @@ from PIL import Image
 import pandas as pd
 import matplotlib.pyplot as plt
 from geopy.distance import geodesic
+from pymongo.mongo_client import MongoClient
+from pymongo.server_api import ServerApi
+from dotenv import load_dotenv
 
+load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# Configuration
-app.config["MONGO_URI"] = os.environ.get("MONGO_URI", "mongodb://localhost:27017/plant_bounty")
+
+app.config["MONGO_URI"] = os.environ.get("MONGO_URI")
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "your-secret-key-for-jwt")
 app.config["UPLOAD_FOLDER"] = os.environ.get("UPLOAD_FOLDER", "/tmp/plant_uploads")
 
-# Ensure upload directory exists
+
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
-# MongoDB setup
-mongo = PyMongo(app)
 
-# Plant identification model setup
+mongo = MongoClient(os.getenv("MONGO_URI"), server_api=ServerApi('1'))
+
+
 MODEL_PATH = os.environ.get("MODEL_PATH", "plant_identification_model")
 
-# Load plant identification model
+
 try:
     plant_model = tf.keras.models.load_model(MODEL_PATH)
     
-    # Load plant labels
+    
     with open(os.path.join(MODEL_PATH, "labels.txt"), "r") as f:
         plant_labels = [line.strip() for line in f.readlines()]
     
     plant_model_loaded = True
 except:
-    # If model loading fails, use a fallback approach
+    
     plant_model_loaded = False
-    plant_labels = ["daisy", "dandelion", "roses", "sunflowers", "tulips"]  # Example labels
+    plant_labels = ["daisy", "dandelion", "roses", "sunflowers", "tulips"]  
 
 def identify_plant(image_path):
     """
@@ -61,13 +65,13 @@ def identify_plant(image_path):
     """
     try:
         if plant_model_loaded:
-            # Preprocess image for the model
+            
             img = tf.keras.preprocessing.image.load_img(image_path, target_size=(224, 224))
             img_array = tf.keras.preprocessing.image.img_to_array(img)
             img_array = np.expand_dims(img_array, axis=0)
             img_array = tf.keras.applications.mobilenet_v2.preprocess_input(img_array)
             
-            # Get predictions
+            
             predictions = plant_model.predict(img_array)
             predicted_class = np.argmax(predictions[0])
             confidence = float(predictions[0][predicted_class])
@@ -77,13 +81,13 @@ def identify_plant(image_path):
                 "confidence": confidence
             }
         else:
-            # Fallback to a simulated identification (for demo purposes)
-            # In production, you'd use a proper identification service or API
+            
+            
             from random import choice, random
             species = choice(plant_labels)
             return {
                 "species": species,
-                "confidence": 0.7 + (random() * 0.3)  # Random confidence between 0.7 and 1.0
+                "confidence": 0.7 + (random() * 0.3)  
             }
     except Exception as e:
         print(f"Error in plant identification: {e}")
@@ -93,7 +97,7 @@ def identify_plant(image_path):
             "error": str(e)
         }
 
-# Authentication decorator
+
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -119,7 +123,7 @@ def token_required(f):
     
     return decorated
 
-# Utility functions
+
 def save_image(image_file):
     """Save an image file and return its path"""
     filename = str(uuid.uuid4()) + os.path.splitext(image_file.filename)[1]
@@ -134,24 +138,24 @@ def calculate_distance(location1, location2):
         point2 = (location2['latitude'], location2['longitude'])
         return geodesic(point1, point2).kilometers
     except:
-        return float('inf')  # Return infinity if calculation fails
+        return float('inf')  
 
-# User Authentication Endpoints
+
 @app.route('/api/add_user', methods=['POST'])
 def add_user():
     data = request.get_json()
     
-    # Check if required fields are present
+    
     required_fields = ['name', 'email', 'password', 'location']
     for field in required_fields:
         if field not in data:
             return jsonify({'message': f'Missing required field: {field}'}), 400
     
-    # Check if user already exists
+    
     if mongo.db.users.find_one({'email': data['email']}):
         return jsonify({'message': 'User already exists!'}), 400
     
-    # Create new user
+    
     new_user = {
         'name': data['name'],
         'email': data['email'],
@@ -197,7 +201,7 @@ def verify_login():
 @app.route('/api/user_profile', methods=['GET'])
 @token_required
 def user_profile(current_user):
-    # Remove password before sending data
+    
     user_data = {
         'id': str(current_user['_id']),
         'name': current_user['name'],
@@ -219,14 +223,14 @@ def user_profile(current_user):
 def update_profile(current_user):
     data = request.get_json()
     
-    # Fields that can be updated
+    
     update_data = {}
     allowed_fields = ['name', 'location', 'bio', 'expertise', 'profile_picture']
     for field in allowed_fields:
         if field in data:
             update_data[field] = data[field]
         
-    # Update user
+    
     if update_data:
         mongo.db.users.update_one(
             {'_id': current_user['_id']},
@@ -235,28 +239,28 @@ def update_profile(current_user):
         
     return jsonify({'message': 'Profile updated successfully!'})
 
-# Project Management Endpoints
+
 @app.route('/api/create_project', methods=['POST'])
 @token_required
 def create_project(current_user):
     data = request.get_json()
     
-    # Validate project data
+    
     required_fields = ['title', 'description', 'plant_type', 'timeframe', 'payment', 'submissions_needed', 'action_type', 'location']
     for field in required_fields:
         if field not in data:
             return jsonify({'message': f'Missing required field: {field}'}), 400
     
-    # Check if action type is valid
+    
     valid_actions = ['research', 'removal']
     if data['action_type'] not in valid_actions:
         return jsonify({'message': f'Invalid action type. Must be one of: {valid_actions}'}), 400
         
-    # Check if removal action is requested by a verified organization
+    
     if data['action_type'] == 'removal' and not current_user.get('is_verified_org', False):
         return jsonify({'message': 'Only verified organizations can create removal projects'}), 403
     
-    # Create new project
+    
     new_project = {
         'title': data['title'],
         'description': data['description'],
@@ -282,7 +286,7 @@ def create_project(current_user):
     
     project_id = mongo.db.projects.insert_one(new_project).inserted_id
     
-    # Update user's created projects
+    
     mongo.db.users.update_one(
         {'_id': current_user['_id']},
         {'$push': {'created_projects': project_id}}
@@ -298,31 +302,31 @@ def create_project(current_user):
 def update_project(current_user, project_id):
     data = request.get_json()
     
-    # Get project
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Check if user is the project creator
+    
     if str(project['created_by']) != str(current_user['_id']):
         return jsonify({'message': 'Unauthorized!'}), 403
     
-    # Fields that can be updated
+    
     update_data = {}
     allowed_fields = ['title', 'description', 'additional_notes', 'location', 'timeframe', 'payment', 'submissions_needed']
     for field in allowed_fields:
         if field in data:
             update_data[field] = data[field]
     
-    # Special handling for timeframe
+    
     if 'timeframe' in update_data:
         update_data['timeframe'] = {
             'start': datetime.datetime.fromisoformat(data['timeframe']['start']),
             'end': datetime.datetime.fromisoformat(data['timeframe']['end'])
         }
     
-    # Update project
+    
     if update_data:
         update_data['updated_at'] = datetime.datetime.utcnow()
         mongo.db.projects.update_one(
@@ -335,17 +339,17 @@ def update_project(current_user, project_id):
 @app.route('/api/get_project/<project_id>', methods=['GET'])
 @token_required
 def get_project(current_user, project_id):
-    # Get project
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Convert ObjectId to string
+    
     project['_id'] = str(project['_id'])
     project['created_by'] = str(project['created_by'])
     
-    # Convert ObjectIds in arrays
+    
     if 'contributors' in project:
         project['contributors'] = [str(user_id) for user_id in project['contributors']]
     if 'invited_users' in project:
@@ -356,15 +360,15 @@ def get_project(current_user, project_id):
 @app.route('/api/user_projects', methods=['GET'])
 @token_required
 def user_projects(current_user):
-    # Get projects created by the current user
+    
     projects = list(mongo.db.projects.find({'created_by': current_user['_id']}))
     
-    # Convert ObjectId to string
+    
     for project in projects:
         project['_id'] = str(project['_id'])
         project['created_by'] = str(project['created_by'])
         
-        # Convert ObjectIds in arrays
+        
         if 'contributors' in project:
             project['contributors'] = [str(user_id) for user_id in project['contributors']]
         if 'invited_users' in project:
@@ -375,30 +379,30 @@ def user_projects(current_user):
 @app.route('/api/available_projects', methods=['GET'])
 @token_required
 def available_projects(current_user):
-    # Get user's location
+    
     user_location = current_user.get('location', {})
     
-    # Get query parameters
-    max_distance = float(request.args.get('max_distance', 50))  # km
+    
+    max_distance = float(request.args.get('max_distance', 50))  
     action_type = request.args.get('action_type')
     plant_type = request.args.get('plant_type')
     status = request.args.get('status', 'open')
     
-    # Build query
+    
     query = {'status': status}
     
-    # Filter by action type if provided
+    
     if action_type:
         query['action_type'] = action_type
         
-    # Filter by plant type if provided
+    
     if plant_type:
         query['plant_type'] = plant_type
     
-    # Get projects
+    
     projects = list(mongo.db.projects.find(query))
     
-    # Filter by distance if user location is available
+    
     filtered_projects = []
     if user_location and 'latitude' in user_location and 'longitude' in user_location:
         for project in projects:
@@ -406,57 +410,57 @@ def available_projects(current_user):
             if 'latitude' in project_location and 'longitude' in project_location:
                 distance = calculate_distance(user_location, project_location)
                 if distance <= max_distance:
-                    project['distance'] = round(distance, 2)  # Round to 2 decimal places
+                    project['distance'] = round(distance, 2)  
                     filtered_projects.append(project)
             else:
-                # Include projects without location data
+                
                 project['distance'] = None
                 filtered_projects.append(project)
     else:
-        # If user location is not available, include all projects
+        
         filtered_projects = projects
     
-    # Convert ObjectId to string
+    
     for project in filtered_projects:
         project['_id'] = str(project['_id'])
         project['created_by'] = str(project['created_by'])
         
-        # Convert ObjectIds in arrays
+        
         if 'contributors' in project:
             project['contributors'] = [str(user_id) for user_id in project['contributors']]
         if 'invited_users' in project:
             project['invited_users'] = [str(user_id) for user_id in project['invited_users']]
     
-    # Sort by distance if available
+    
     filtered_projects.sort(key=lambda x: x.get('distance', float('inf')))
     
     return jsonify(filtered_projects)
 
-# Collaboration Endpoints
+
 @app.route('/api/join_project/<project_id>', methods=['POST'])
 @token_required
 def join_project(current_user, project_id):
-    # Get project
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Check if project is still open
+    
     if project['status'] != 'open':
         return jsonify({'message': 'Project is not open for contributions!'}), 400
     
-    # Check if user is already a contributor
+    
     if current_user['_id'] in project.get('contributors', []):
         return jsonify({'message': 'You are already a contributor to this project!'}), 400
     
-    # Add user to project contributors
+    
     mongo.db.projects.update_one(
         {'_id': ObjectId(project_id)},
         {'$push': {'contributors': current_user['_id']}}
     )
     
-    # Add project to user's joined projects
+    
     mongo.db.users.update_one(
         {'_id': current_user['_id']},
         {'$push': {'joined_projects': ObjectId(project_id)}}
@@ -467,13 +471,13 @@ def join_project(current_user, project_id):
 @app.route('/api/project_contributors/<project_id>', methods=['GET'])
 @token_required
 def project_contributors(current_user, project_id):
-    # Get project
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Get contributors
+    
     contributors = []
     
     if 'contributors' in project and project['contributors']:
@@ -499,55 +503,55 @@ def invite_contributor(current_user, project_id):
     if 'email' not in data:
         return jsonify({'message': 'Email is required!'}), 400
     
-    # Get project
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Check if user is the project creator
+    
     if str(project['created_by']) != str(current_user['_id']):
         return jsonify({'message': 'Unauthorized!'}), 403
     
-    # Find user by email
+    
     invited_user = mongo.db.users.find_one({'email': data['email']})
     
     if not invited_user:
         return jsonify({'message': 'User not found!'}), 404
     
-    # Check if user is already invited
+    
     if invited_user['_id'] in project.get('invited_users', []):
         return jsonify({'message': 'User already invited!'}), 400
     
-    # Check if user is already a contributor
+    
     if invited_user['_id'] in project.get('contributors', []):
         return jsonify({'message': 'User is already a contributor!'}), 400
     
-    # Add user to invited users
+    
     mongo.db.projects.update_one(
         {'_id': ObjectId(project_id)},
         {'$push': {'invited_users': invited_user['_id']}}
     )
     
-    # In a real app, you'd send an email or notification here
+    
     
     return jsonify({'message': f'Invitation sent to {data["email"]}!'})
 
-# Data Collection Endpoints
+
 @app.route('/api/upload_picture/<project_id>', methods=['POST'])
 @token_required
 def upload_picture(current_user, project_id):
-    # Check if project exists
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Check if user is a contributor or creator
+    
     if current_user['_id'] not in project.get('contributors', []) and current_user['_id'] != project['created_by']:
         return jsonify({'message': 'Unauthorized!'}), 403
     
-    # Check if file is provided
+    
     if 'picture' not in request.files:
         return jsonify({'message': 'No picture provided!'}), 400
     
@@ -556,23 +560,23 @@ def upload_picture(current_user, project_id):
     if picture.filename == '':
         return jsonify({'message': 'No picture selected!'}), 400
     
-    # Get metadata
+    
     location = request.form.get('location', '{}')
     notes = request.form.get('notes', '')
     collection_site_id = request.form.get('collection_site_id', None)
     
     try:
-        location = eval(location)  # Convert string to dict, use json.loads in production
+        location = eval(location)  
     except:
         location = {}
     
-    # Save the image file
+    
     file_path, filename = save_image(picture)
     
-    # Identify plant in the image
+    
     plant_data = identify_plant(file_path)
     
-    # Create picture document
+    
     new_picture = {
         'project_id': ObjectId(project_id),
         'user_id': current_user['_id'],
@@ -588,14 +592,14 @@ def upload_picture(current_user, project_id):
     
     picture_id = mongo.db.pictures.insert_one(new_picture).inserted_id
     
-    # If the picture matches the project's plant type, update completion status
+    
     if new_picture['is_match'] and project['submissions_completed'] < project['submissions_needed']:
         mongo.db.projects.update_one(
             {'_id': ObjectId(project_id)},
             {'$inc': {'submissions_completed': 1}}
         )
         
-        # Check if project has reached its completion target
+        
         updated_project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
         if updated_project['submissions_completed'] >= updated_project['submissions_needed']:
             mongo.db.projects.update_one(
@@ -613,20 +617,20 @@ def upload_picture(current_user, project_id):
 @app.route('/api/project_pictures/<project_id>', methods=['GET'])
 @token_required
 def project_pictures(current_user, project_id):
-    # Get project
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Check if user is authorized to view pictures
+    
     if current_user['_id'] != project['created_by'] and current_user['_id'] not in project.get('contributors', []):
         return jsonify({'message': 'Unauthorized!'}), 403
     
-    # Get pictures for the project
+    
     pictures = list(mongo.db.pictures.find({'project_id': ObjectId(project_id)}))
     
-    # Convert ObjectId to string
+    
     for picture in pictures:
         picture['_id'] = str(picture['_id'])
         picture['project_id'] = str(picture['project_id'])
@@ -641,23 +645,23 @@ def project_pictures(current_user, project_id):
 def add_location(current_user, project_id):
     data = request.get_json()
     
-    # Validate data
+    
     required_fields = ['name', 'latitude', 'longitude']
     for field in required_fields:
         if field not in data:
             return jsonify({'message': f'Missing required field: {field}'}), 400
     
-    # Get project
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Check if user is authorized
+    
     if current_user['_id'] != project['created_by'] and current_user['_id'] not in project.get('contributors', []):
         return jsonify({'message': 'Unauthorized!'}), 403
     
-    # Create new location
+    
     new_location = {
         'project_id': ObjectId(project_id),
         'name': data['name'],
@@ -670,7 +674,7 @@ def add_location(current_user, project_id):
     
     location_id = mongo.db.locations.insert_one(new_location).inserted_id
     
-    # Add location to project's collection sites
+    
     mongo.db.projects.update_one(
         {'_id': ObjectId(project_id)},
         {'$push': {'collection_sites': location_id}}
@@ -684,16 +688,16 @@ def add_location(current_user, project_id):
 @app.route('/api/project_locations/<project_id>', methods=['GET'])
 @token_required
 def project_locations(current_user, project_id):
-    # Get project
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Get locations for the project
+    
     locations = list(mongo.db.locations.find({'project_id': ObjectId(project_id)}))
     
-    # Convert ObjectId to string
+    
     for location in locations:
         location['_id'] = str(location['_id'])
         location['project_id'] = str(location['project_id'])
@@ -709,17 +713,17 @@ def post_message(current_user, project_id):
     if 'content' not in data:
         return jsonify({'message': 'Message content is required!'}), 400
     
-    # Get project
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Check if user is authorized
+    
     if current_user['_id'] != project['created_by'] and current_user['_id'] not in project.get('contributors', []):
         return jsonify({'message': 'Unauthorized!'}), 403
     
-    # Create new message
+    
     new_message = {
         'project_id': ObjectId(project_id),
         'user_id': current_user['_id'],
@@ -737,25 +741,25 @@ def post_message(current_user, project_id):
 @app.route('/api/project_discussion/<project_id>', methods=['GET'])
 @token_required
 def project_discussion(current_user, project_id):
-    # Get project
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Check if user is authorized
+    
     if current_user['_id'] != project['created_by'] and current_user['_id'] not in project.get('contributors', []):
         return jsonify({'message': 'Unauthorized!'}), 403
     
-    # Get messages for the project
+    
     messages = list(mongo.db.messages.find({'project_id': ObjectId(project_id)}).sort('created_at', 1))
     
-    # Convert ObjectId to string and add user info
+    
     for message in messages:
         message['_id'] = str(message['_id'])
         message['project_id'] = str(message['project_id'])
         
-        # Get user info
+        
         user_id = message['user_id']
         user = mongo.db.users.find_one({'_id': user_id})
         
@@ -772,26 +776,26 @@ def project_discussion(current_user, project_id):
 @app.route('/api/project_data/<project_id>', methods=['GET'])
 @token_required
 def project_data(current_user, project_id):
-    # Get project
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Check if user is authorized
+    
     if current_user['_id'] != project['created_by'] and current_user['_id'] not in project.get('contributors', []):
         return jsonify({'message': 'Unauthorized!'}), 403
     
-    # Get data summary
+    
     pictures_count = mongo.db.pictures.count_documents({'project_id': ObjectId(project_id)})
     matching_pictures_count = mongo.db.pictures.count_documents({
         'project_id': ObjectId(project_id),
         'is_match': True
     })
     locations_count = mongo.db.locations.count_documents({'project_id': ObjectId(project_id)})
-    contributors_count = len(project.get('contributors', [])) + 1  # +1 for the project creator
+    contributors_count = len(project.get('contributors', [])) + 1  
     
-    # Get available datasets
+    
     datasets = [
         {
             'id': 'pictures',
@@ -841,17 +845,17 @@ def project_data(current_user, project_id):
 @app.route('/api/project_datasets/<project_id>', methods=['GET'])
 @token_required
 def project_datasets(current_user, project_id):
-    # Get project
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Check if user is authorized
+    
     if current_user['_id'] != project['created_by']:
         return jsonify({'message': 'Unauthorized! Only project creators can access datasets.'}), 403
     
-    # Define available datasets
+    
     datasets = [
         {
             'id': 'pictures',
@@ -890,30 +894,30 @@ def project_datasets(current_user, project_id):
 @app.route('/api/download_data/<project_id>', methods=['GET'])
 @token_required
 def download_data(current_user, project_id):
-    # Get project
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Check if user is authorized
+    
     if current_user['_id'] != project['created_by']:
         return jsonify({'message': 'Unauthorized! Only project creators can download data.'}), 403
     
-    # Get all pictures for the project
+    
     pictures = list(mongo.db.pictures.find({'project_id': ObjectId(project_id)}))
     
-    # Create CSV data
+    
     output = io.StringIO()
     writer = csv.writer(output)
     
-    # Write header
+    
     writer.writerow([
         'ID', 'User ID', 'User Name', 'Latitude', 'Longitude',
         'Plant Species', 'Confidence', 'Is Match', 'Notes', 'Uploaded At'
     ])
     
-    # Write data rows
+    
     for picture in pictures:
         user = mongo.db.users.find_one({'_id': picture['user_id']})
         user_name = user['name'] if user else 'Unknown'
@@ -939,7 +943,7 @@ def download_data(current_user, project_id):
             picture.get('uploaded_at', '').isoformat() if picture.get('uploaded_at') else ''
         ])
     
-    # Create response
+    
     output.seek(0)
     return send_file(
         io.BytesIO(output.getvalue().encode('utf-8')),
@@ -951,32 +955,32 @@ def download_data(current_user, project_id):
 @app.route('/api/download_dataset/<project_id>/<dataset_id>', methods=['GET'])
 @token_required
 def download_dataset(current_user, project_id, dataset_id):
-    # Get project
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Check if user is authorized
+    
     if current_user['_id'] != project['created_by']:
         return jsonify({'message': 'Unauthorized! Only project creators can download datasets.'}), 403
     
-    # Create CSV data
+    
     output = io.StringIO()
     writer = csv.writer(output)
     
-    # Different handling based on dataset type
+    
     if dataset_id == 'pictures':
-        # Get all pictures
+        
         pictures = list(mongo.db.pictures.find({'project_id': ObjectId(project_id)}))
         
-        # Write header
+        
         writer.writerow([
             'ID', 'User ID', 'User Name', 'Latitude', 'Longitude',
             'Plant Species', 'Confidence', 'Is Match', 'Notes', 'Uploaded At'
         ])
         
-        # Write data
+        
         for picture in pictures:
             user = mongo.db.users.find_one({'_id': picture['user_id']})
             user_name = user['name'] if user else 'Unknown'
@@ -1005,19 +1009,19 @@ def download_dataset(current_user, project_id, dataset_id):
         filename = f'project_{project_id}_pictures.csv'
     
     elif dataset_id == 'matching_pictures':
-        # Get matching pictures
+        
         pictures = list(mongo.db.pictures.find({
             'project_id': ObjectId(project_id),
             'is_match': True
         }))
         
-        # Write header
+        
         writer.writerow([
             'ID', 'User ID', 'User Name', 'Latitude', 'Longitude',
             'Plant Species', 'Confidence', 'Notes', 'Uploaded At'
         ])
         
-        # Write data
+        
         for picture in pictures:
             user = mongo.db.users.find_one({'_id': picture['user_id']})
             user_name = user['name'] if user else 'Unknown'
@@ -1045,15 +1049,15 @@ def download_dataset(current_user, project_id, dataset_id):
         filename = f'project_{project_id}_matching_pictures.csv'
     
     elif dataset_id == 'locations':
-        # Get locations
+        
         locations = list(mongo.db.locations.find({'project_id': ObjectId(project_id)}))
         
-        # Write header
+        
         writer.writerow([
             'ID', 'Name', 'Latitude', 'Longitude', 'Description', 'Added By', 'Created At'
         ])
         
-        # Write data
+        
         for location in locations:
             user = mongo.db.users.find_one({'_id': location['added_by']})
             user_name = user['name'] if user else 'Unknown'
@@ -1071,18 +1075,18 @@ def download_dataset(current_user, project_id, dataset_id):
         filename = f'project_{project_id}_locations.csv'
     
     elif dataset_id == 'contributors':
-        # Get contributors
+        
         contributor_ids = project.get('contributors', []) + [project['created_by']]
         contributors = list(mongo.db.users.find({'_id': {'$in': contributor_ids}}))
         
-        # Write header
+        
         writer.writerow([
             'ID', 'Name', 'Email', 'Expertise', 'Is Creator', 'Contributions'
         ])
         
-        # Write data
+        
         for contributor in contributors:
-            # Count contributions (pictures)
+            
             contribution_count = mongo.db.pictures.count_documents({
                 'project_id': ObjectId(project_id),
                 'user_id': contributor['_id']
@@ -1100,15 +1104,15 @@ def download_dataset(current_user, project_id, dataset_id):
         filename = f'project_{project_id}_contributors.csv'
     
     elif dataset_id == 'all':
-        # This would be a more complex dataset with multiple tables
-        # For simplicity, we'll create a ZIP file with multiple CSVs in a real implementation
-        # For now, just redirect to the basic data download
+        
+        
+        
         return download_data(current_user, project_id)
     
     else:
         return jsonify({'message': 'Invalid dataset ID!'}), 400
     
-    # Create response
+    
     output.seek(0)
     return send_file(
         io.BytesIO(output.getvalue().encode('utf-8')),
@@ -1120,46 +1124,46 @@ def download_dataset(current_user, project_id, dataset_id):
 @app.route('/api/download_all_data/<project_id>', methods=['GET'])
 @token_required
 def download_all_data(current_user, project_id):
-    # Get project
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Check if user is authorized
+    
     if current_user['_id'] != project['created_by']:
         return jsonify({'message': 'Unauthorized! Only project creators can download all data.'}), 403
     
-    # In a real implementation, this would create a ZIP file with multiple datasets
-    # For now, redirect to the basic data download
+    
+    
     return download_data(current_user, project_id)
 
 @app.route('/api/project_visualization/<project_id>', methods=['GET'])
 @token_required
 def project_visualization(current_user, project_id):
-    # Get project
+    
     project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
     
     if not project:
         return jsonify({'message': 'Project not found!'}), 404
     
-    # Check if user is authorized
+    
     if current_user['_id'] != project['created_by'] and current_user['_id'] not in project.get('contributors', []):
         return jsonify({'message': 'Unauthorized!'}), 403
     
-    # Get visualization type from query parameters
+    
     viz_type = request.args.get('type', 'map')
     
-    # Different handling based on visualization type
+    
     if viz_type == 'map':
-        # Get pictures with location data
+        
         pictures = list(mongo.db.pictures.find({
             'project_id': ObjectId(project_id),
             'location.latitude': {'$exists': True},
             'location.longitude': {'$exists': True}
         }))
         
-        # Format data for map
+        
         map_data = []
         for picture in pictures:
             location = picture.get('location', {})
@@ -1178,13 +1182,13 @@ def project_visualization(current_user, project_id):
         return jsonify(map_data)
     
     elif viz_type == 'time_series':
-        # Get pictures with timestamps
+        
         pictures = list(mongo.db.pictures.find({
             'project_id': ObjectId(project_id),
             'uploaded_at': {'$exists': True}
         }).sort('uploaded_at', 1))
         
-        # Create time series data
+        
         time_data = []
         cumulative_matches = 0
         
@@ -1201,13 +1205,13 @@ def project_visualization(current_user, project_id):
         return jsonify(time_data)
     
     elif viz_type == 'confidence':
-        # Get pictures with confidence scores
+        
         pictures = list(mongo.db.pictures.find({
             'project_id': ObjectId(project_id),
             'plant_identification.confidence': {'$exists': True}
         }))
         
-        # Create confidence data
+        
         confidence_data = []
         
         for picture in pictures:
@@ -1224,9 +1228,9 @@ def project_visualization(current_user, project_id):
     else:
         return jsonify({'message': 'Invalid visualization type!'}), 400
 
-# Main entry point
+
 if __name__ == "__main__":
-    # Create indexes for better query performance
+    
     mongo.db.projects.create_index([('status', 1)])
     mongo.db.projects.create_index([('created_by', 1)])
     mongo.db.projects.create_index([('plant_type', 1)])
