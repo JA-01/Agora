@@ -12,7 +12,8 @@ import requests
 from bson.objectid import ObjectId
 
 # Plant identification API (example - you'll need to replace with actual API)
-PLANT_ID_API_KEY = os.getenv("PLANT_ID_API_KEY")
+PLANTNET_API_KEY = os.getenv("PLANT_ID_API_KEY")
+PLANTNET_API_URL = "https://my-api.plantnet.org/v2/identify/all"
 
 load_dotenv()
 MONGO_URI_STRING = os.getenv("MONGO_URI_STRING")
@@ -32,25 +33,44 @@ submissionsDB = db["Submissions"]
 # Helper function for plant identification
 def identify_plant(image_base64):
     """
-    Use a plant identification API to identify plant species
-    Note: Replace with actual plant identification API call
+    Use the Pl@ntNet API to identify plant species from an image.
     """
     try:
-        response = requests.post(
-            "https://plant-identification-api.com/identify",
-            headers={
-                "Authorization": f"Bearer {PLANT_ID_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "images": [image_base64]
-            }
-        )
-        data = response.json()
-        return data.get('species', {}).get('scientific_name')
+        # Prepare the headers and the data for the request
+        headers = {
+            "Api-Key": PLANTNET_API_KEY,
+            "Content-Type": "application/json"
+        }
+
+        # Payload for the API request with the image data
+        data = {
+            "organs": ["flower", "leaf", "fruit"],  # Specify the parts of the plant you want to identify
+            "images": [image_base64]  # Image as base64 string
+        }
+
+        # Send the request to the Pl@ntNet API
+        response = requests.post(PLANTNET_API_URL, json=data, headers=headers)
+
+        # Check if the response is successful
+        if response.status_code == 200:
+            result = response.json()
+            # Extract the scientific name of the plant if available
+            species = result.get("results", [])
+            if species:
+                plant_name = species[0].get("species", {}).get("commonName")
+                for i in range(20):
+                    print(plant_name)
+                return plant_name
+            else:
+                print("No plant found.")
+                return None
+        else:
+            print(f"Error: {response.status_code}, {response.text}")
+            return None
     except Exception as e:
         print(f"Plant identification error: {e}")
         return None
+    
 
 @app.route("/api/verify_login", methods=["POST"])
 def verify_login():
