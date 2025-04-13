@@ -1,1560 +1,1275 @@
-from flask import Flask, request, jsonify, send_file
-from flask_pymongo import PyMongo
-from bson.objectid import ObjectId
-from werkzeug.security import generate_password_hash, check_password_hash
-from functools import wraps
-import jwt
-import datetime
+from flask import Flask, render_template, request, jsonify, send_file, make_response
+from dotenv import load_dotenv
 import os
-from flask_cors import CORS
-from bson.json_util import dumps
-import uuid
-import io
-import csv
-import numpy as np
-from PIL import Image
-import pandas as pd
-from geopy.distance import geodesic
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
-from dotenv import load_dotenv
 import requests
-import os
-from typing import Dict, Any, Optional
-
+import random
+from flask_cors import CORS
+from werkzeug.utils import secure_filename
+import datetime
+import json
+from bson import json_util
+import base64
+from openai import OpenAI
+from gridfs import GridFS
+import io
+import requests
+import json
+from datetime import datetime
+import stripe
+#By Aayush Palai. DO NOT REPRODUCE FOR COMMERICAL OR PERSONAL PURPOSES.
 load_dotenv()
+MONGO_URI_STRING = os.getenv("MONGO_URI_STRING")
+
 app = Flask(__name__)
+
 CORS(app)
 
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}   
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  
 
-app.config["MONGO_URI"] = os.environ.get("MONGO_URI")
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "your-secret-key-for-jwt")
-app.config["UPLOAD_FOLDER"] = os.environ.get("UPLOAD_FOLDER", "/tmp/plant_uploads")
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+mongoClient = MongoClient(MONGO_URI_STRING, server_api=ServerApi('1'))
+
+login = mongoClient["Login"]
+passwordsDB = login["Passwords"]
+ridesDB = mongoClient["Events"]["Rides"]
+eventCards = mongoClient["Events"]["EventCards"]
+eventPayments = mongoClient["Events"]["EventPayments"]
+events = mongoClient["Events"]
+arrivalStatusDB = events["ArrivalStatus"]
+fs = GridFS(events)
+eventsDB = events["Events"]
+picturesDB = events["Pictures"]
+timesDB = events["Times"]
+statsDB = mongoClient["appStats"]
+userCountDB = statsDB["userCount"]
 
 
-os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+
+stripe.api_key = os.getenv("STRIPE_API_KEY")
 
 
-mongo = MongoClient(os.getenv("MONGO_URI"), server_api=ServerApi('1'))
-
-
-def token_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = None
+class MarqetaAPI:
+    def __init__(self):
+        self.username = "8847d248-adfb-4a3d-b047-dad6f326daad"
+        self.password = "2a0aa7e6-c2a4-453d-9914-efc57eadae51"
+        self.base_url = "https://sandbox-api.marqeta.com/v3"
+        self.card_product_token = "68ea91ce-d4c4-4d16-ae6e-03fb6cf0c515"
+    
+    def create_user(self, event_id):
+        """Create a Marqeta user for an event"""
+        url = f"{self.base_url}/users"
         
-        if 'Authorization' in request.headers:
-            auth_header = request.headers['Authorization']
-            if auth_header.startswith('Bearer '):
-                token = auth_header.split(' ')[1]
+        user_data = {
+            "first_name": f"Event",
+            "last_name": f"{event_id}",
+            "email": f"event.{event_id}.{datetime.now().strftime('%Y%m%d%H%M%S')}@example.com"
+        }
         
-        if not token:
-            return jsonify({'message': 'Token is missing!'}), 401
-        
-        try:
-            data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
-            current_user = mongo.db.users.find_one({'_id': ObjectId(data['user_id'])})
-            if not current_user:
-                return jsonify({'message': 'Invalid token!'}), 401
-        except:
-            return jsonify({'message': 'Invalid token!'}), 401
-            
-        return f(current_user, *args, **kwargs)
-    
-    return decorated
-
-
-def save_image(image_file):
-    """Save an image file and return its path"""
-    filename = str(uuid.uuid4()) + os.path.splitext(image_file.filename)[1]
-    file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
-    image_file.save(file_path)
-    return file_path, filename
-
-def calculate_distance(location1, location2):
-    """Calculate distance between two lat/long locations in km"""
-    try:
-        point1 = (location1['latitude'], location1['longitude'])
-        point2 = (location2['latitude'], location2['longitude'])
-        return geodesic(point1, point2).kilometers
-    except:
-        return float('inf')  
-
-
-@app.route('/api/add_user', methods=['POST'])
-def add_user():
-    data = request.get_json()
-    
-    
-    required_fields = ['name', 'email', 'password', 'location']
-    for field in required_fields:
-        if field not in data:
-            return jsonify({'message': f'Missing required field: {field}'}), 400
-    
-    
-    if mongo.db.users.find_one({'email': data['email']}):
-        return jsonify({'message': 'User already exists!'}), 400
-    
-    
-    new_user = {
-        'name': data['name'],
-        'email': data['email'],
-        'password': generate_password_hash(data['password']),
-        'location': data['location'],
-        'bio': data.get('bio', ''),
-        'expertise': data.get('expertise', []),
-        'is_verified_org': data.get('is_verified_org', False),
-        'profile_picture': data.get('profile_picture', ''),
-        'joined_projects': [],
-        'created_projects': [],
-        'created_at': datetime.datetime.utcnow()
-    }
-    
-    user_id = mongo.db.users.insert_one(new_user).inserted_id
-    
-    return jsonify({'message': 'User registered successfully!', 'user_id': str(user_id)}), 201
-
-@app.route('/api/verify_login', methods=['POST'])
-def verify_login():
-    data = request.get_json()
-    
-    if 'email' not in data or 'password' not in data:
-        return jsonify({'message': 'Email and password are required!'}), 400
-    
-    user = mongo.db.users.find_one({'email': data['email']})
-    
-    if not user or not check_password_hash(user['password'], data['password']):
-        return jsonify({'message': 'Invalid credentials!'}), 401
-    
-    token = jwt.encode({
-        'user_id': str(user['_id']),
-        'exp': datetime.datetime.utcnow() + datetime.timedelta(days=7)
-    }, app.config['SECRET_KEY'], algorithm="HS256")
-    
-    return jsonify({
-        'message': 'Login successful!',
-        'token': token,
-        'user_id': str(user['_id']),
-        'is_verified_org': user.get('is_verified_org', False)
-    })
-
-@app.route('/api/user_profile', methods=['GET'])
-@token_required
-def user_profile(current_user):
-    
-    user_data = {
-        'id': str(current_user['_id']),
-        'name': current_user['name'],
-        'email': current_user['email'],
-        'location': current_user.get('location', {}),
-        'bio': current_user.get('bio', ''),
-        'expertise': current_user.get('expertise', []),
-        'is_verified_org': current_user.get('is_verified_org', False),
-        'profile_picture': current_user.get('profile_picture', ''),
-        'joined_projects': current_user.get('joined_projects', []),
-        'created_projects': current_user.get('created_projects', []),
-        'created_at': current_user['created_at']
-    }
-    
-    return jsonify(user_data)
-
-@app.route('/api/update_profile', methods=['PUT'])
-@token_required
-def update_profile(current_user):
-    data = request.get_json()
-    
-    
-    update_data = {}
-    allowed_fields = ['name', 'location', 'bio', 'expertise', 'profile_picture']
-    for field in allowed_fields:
-        if field in data:
-            update_data[field] = data[field]
-        
-    
-    if update_data:
-        mongo.db.users.update_one(
-            {'_id': current_user['_id']},
-            {'$set': update_data}
+        response = requests.post(
+            url,
+            auth=(self.username, self.password),
+            json=user_data,
+            headers={"Content-Type": "application/json"}
         )
         
-    return jsonify({'message': 'Profile updated successfully!'})
-
-
-
-@app.route('/api/update_project/<project_id>', methods=['PUT'])
-@token_required
-def update_project(current_user, project_id):
-    data = request.get_json()
+        if response.status_code == 201:
+            return response.json()["token"]
+        else:
+            raise Exception(f"Failed to create user: {response.text}")
     
-    
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    if str(project['created_by']) != str(current_user['_id']):
-        return jsonify({'message': 'Unauthorized!'}), 403
-    
-    
-    update_data = {}
-    allowed_fields = ['title', 'description', 'additional_notes', 'location', 'timeframe', 'payment', 'submissions_needed']
-    for field in allowed_fields:
-        if field in data:
-            update_data[field] = data[field]
-    
-    
-    if 'timeframe' in update_data:
-        update_data['timeframe'] = {
-            'start': datetime.datetime.fromisoformat(data['timeframe']['start']),
-            'end': datetime.datetime.fromisoformat(data['timeframe']['end'])
+    def create_card(self, user_token):
+        """Create a virtual card for a user"""
+        url = f"{self.base_url}/cards?show_cvv_number=true&show_pan=true"
+        
+        card_data = {
+            "user_token": user_token,
+            "card_product_token": self.card_product_token
         }
-    
-    
-    if update_data:
-        update_data['updated_at'] = datetime.datetime.utcnow()
-        mongo.db.projects.update_one(
-            {'_id': ObjectId(project_id)},
-            {'$set': update_data}
+        
+        response = requests.post(
+            url,
+            auth=(self.username, self.password),
+            json=card_data,
+            headers={"Content-Type": "application/json"}
         )
         
-    return jsonify({'message': 'Project updated successfully!'})
-
-@app.route('/api/get_project/<project_id>', methods=['GET'])
-@token_required
-def get_project(current_user, project_id):
+        if response.status_code == 201:
+            card_info = response.json()
+            return {
+                "token": card_info.get('token'),
+                "pan": card_info.get('pan'),
+                "cvv": card_info.get('cvv_number'),
+                "expiration": card_info.get('expiration'),
+                "expiration_time": card_info.get('expiration_time')
+            }
+        else:
+            raise Exception(f"Failed to create card: {response.text}")
     
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    project['_id'] = str(project['_id'])
-    project['created_by'] = str(project['created_by'])
-    
-    
-    if 'contributors' in project:
-        project['contributors'] = [str(user_id) for user_id in project['contributors']]
-    if 'invited_users' in project:
-        project['invited_users'] = [str(user_id) for user_id in project['invited_users']]
-    
-    return jsonify(project)
-
-@app.route('/api/user_projects', methods=['GET'])
-@token_required
-def user_projects(current_user):
-    
-    projects = list(mongo.db.projects.find({'created_by': current_user['_id']}))
-    
-    
-    for project in projects:
-        project['_id'] = str(project['_id'])
-        project['created_by'] = str(project['created_by'])
+    def load_card(self, user_token, amount):
+        """Load money onto a user's card"""
+        url = f"{self.base_url}/gpaorders"
         
         
-        if 'contributors' in project:
-            project['contributors'] = [str(user_id) for user_id in project['contributors']]
-        if 'invited_users' in project:
-            project['invited_users'] = [str(user_id) for user_id in project['invited_users']]
-    
-    return jsonify(projects)
-
-@app.route('/api/available_projects', methods=['GET'])
-@token_required
-def available_projects(current_user):
-    
-    user_location = current_user.get('location', {})
-    
-    
-    max_distance = float(request.args.get('max_distance', 50))  
-    action_type = request.args.get('action_type')
-    plant_type = request.args.get('plant_type')
-    status = request.args.get('status', 'open')
-    
-    
-    query = {'status': status}
-    
-    
-    if action_type:
-        query['action_type'] = action_type
+        gpa_data = {
+            "user_token": user_token,
+            "amount": amount,
+            "currency_code": "USD",
+            "funding_source_token": "sandbox_program_funding"  
+        }
         
-    
-    if plant_type:
-        query['plant_type'] = plant_type
-    
-    
-    projects = list(mongo.db.projects.find(query))
-    
-    
-    filtered_projects = []
-    if user_location and 'latitude' in user_location and 'longitude' in user_location:
-        for project in projects:
-            project_location = project.get('location', {})
-            if 'latitude' in project_location and 'longitude' in project_location:
-                distance = calculate_distance(user_location, project_location)
-                if distance <= max_distance:
-                    project['distance'] = round(distance, 2)  
-                    filtered_projects.append(project)
-            else:
-                
-                project['distance'] = None
-                filtered_projects.append(project)
-    else:
-        
-        filtered_projects = projects
-    
-    
-    for project in filtered_projects:
-        project['_id'] = str(project['_id'])
-        project['created_by'] = str(project['created_by'])
-        
-        
-        if 'contributors' in project:
-            project['contributors'] = [str(user_id) for user_id in project['contributors']]
-        if 'invited_users' in project:
-            project['invited_users'] = [str(user_id) for user_id in project['invited_users']]
-    
-    
-    filtered_projects.sort(key=lambda x: x.get('distance', float('inf')))
-    
-    return jsonify(filtered_projects)
-
-
-@app.route('/api/join_project/<project_id>', methods=['POST'])
-@token_required
-def join_project(current_user, project_id):
-    
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    if project['status'] != 'open':
-        return jsonify({'message': 'Project is not open for contributions!'}), 400
-    
-    
-    if current_user['_id'] in project.get('contributors', []):
-        return jsonify({'message': 'You are already a contributor to this project!'}), 400
-    
-    
-    mongo.db.projects.update_one(
-        {'_id': ObjectId(project_id)},
-        {'$push': {'contributors': current_user['_id']}}
-    )
-    
-    
-    mongo.db.users.update_one(
-        {'_id': current_user['_id']},
-        {'$push': {'joined_projects': ObjectId(project_id)}}
-    )
-    
-    return jsonify({'message': 'You have joined the project successfully!'})
-
-@app.route('/api/project_contributors/<project_id>', methods=['GET'])
-@token_required
-def project_contributors(current_user, project_id):
-    
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    contributors = []
-    
-    if 'contributors' in project and project['contributors']:
-        contributor_ids = [ObjectId(user_id) for user_id in project['contributors']]
-        contributor_cursor = mongo.db.users.find({'_id': {'$in': contributor_ids}})
-        
-        for user in contributor_cursor:
-            contributors.append({
-                'id': str(user['_id']),
-                'name': user['name'],
-                'email': user['email'],
-                'profile_picture': user.get('profile_picture', ''),
-                'expertise': user.get('expertise', [])
-            })
-    
-    return jsonify(contributors)
-
-@app.route('/api/invite_contributor/<project_id>', methods=['POST'])
-@token_required
-def invite_contributor(current_user, project_id):
-    data = request.get_json()
-    
-    if 'email' not in data:
-        return jsonify({'message': 'Email is required!'}), 400
-    
-    
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    if str(project['created_by']) != str(current_user['_id']):
-        return jsonify({'message': 'Unauthorized!'}), 403
-    
-    
-    invited_user = mongo.db.users.find_one({'email': data['email']})
-    
-    if not invited_user:
-        return jsonify({'message': 'User not found!'}), 404
-    
-    
-    if invited_user['_id'] in project.get('invited_users', []):
-        return jsonify({'message': 'User already invited!'}), 400
-    
-    
-    if invited_user['_id'] in project.get('contributors', []):
-        return jsonify({'message': 'User is already a contributor!'}), 400
-    
-    
-    mongo.db.projects.update_one(
-        {'_id': ObjectId(project_id)},
-        {'$push': {'invited_users': invited_user['_id']}}
-    )
-    
-    
-    
-    return jsonify({'message': f'Invitation sent to {data["email"]}!'})
-
-
-@app.route('/api/upload_picture/<project_id>', methods=['POST'])
-@token_required
-def upload_picture(current_user, project_id):
-    
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    if current_user['_id'] not in project.get('contributors', []) and current_user['_id'] != project['created_by']:
-        return jsonify({'message': 'Unauthorized!'}), 403
-    
-    
-    if 'picture' not in request.files:
-        return jsonify({'message': 'No picture provided!'}), 400
-    
-    picture = request.files['picture']
-    
-    if picture.filename == '':
-        return jsonify({'message': 'No picture selected!'}), 400
-    
-    
-    location = request.form.get('location', '{}')
-    notes = request.form.get('notes', '')
-    collection_site_id = request.form.get('collection_site_id', None)
-    
-    try:
-        location = eval(location)  
-    except:
-        location = {}
-    
-    
-    file_path, filename = save_image(picture)
-    
-    
-    plant_data = identify_plant(file_path)
-    
-    
-    new_picture = {
-        'project_id': ObjectId(project_id),
-        'user_id': current_user['_id'],
-        'filename': filename,
-        'file_path': file_path,
-        'location': location,
-        'notes': notes,
-        'collection_site_id': ObjectId(collection_site_id) if collection_site_id else None,
-        'plant_identification': plant_data,
-        'is_match': plant_data['species'].lower() == project['plant_type'].lower(),
-        'uploaded_at': datetime.datetime.utcnow()
-    }
-    
-    picture_id = mongo.db.pictures.insert_one(new_picture).inserted_id
-    
-    
-    if new_picture['is_match'] and project['submissions_completed'] < project['submissions_needed']:
-        mongo.db.projects.update_one(
-            {'_id': ObjectId(project_id)},
-            {'$inc': {'submissions_completed': 1}}
+        response = requests.post(
+            url,
+            auth=(self.username, self.password),
+            json=gpa_data,
+            headers={"Content-Type": "application/json"}
         )
         
-        
-        updated_project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-        if updated_project['submissions_completed'] >= updated_project['submissions_needed']:
-            mongo.db.projects.update_one(
-                {'_id': ObjectId(project_id)},
-                {'$set': {'status': 'completed'}}
-            )
-    
-    return jsonify({
-        'message': 'Picture uploaded successfully!',
-        'picture_id': str(picture_id),
-        'identification': plant_data,
-        'is_match': new_picture['is_match']
-    })
+        if response.status_code in [200, 201]:
+            return response.json()
+        else:
+            raise Exception(f"Failed to load card: {response.text}")
 
-@app.route('/api/project_pictures/<project_id>', methods=['GET'])
-@token_required
-def project_pictures(current_user, project_id):
-    
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    if current_user['_id'] != project['created_by'] and current_user['_id'] not in project.get('contributors', []):
-        return jsonify({'message': 'Unauthorized!'}), 403
-    
-    
-    pictures = list(mongo.db.pictures.find({'project_id': ObjectId(project_id)}))
-    
-    
-    for picture in pictures:
-        picture['_id'] = str(picture['_id'])
-        picture['project_id'] = str(picture['project_id'])
-        picture['user_id'] = str(picture['user_id'])
-        if picture.get('collection_site_id'):
-            picture['collection_site_id'] = str(picture['collection_site_id'])
-    
-    return jsonify(pictures)
 
-@app.route('/api/add_location/<project_id>', methods=['POST'])
-@token_required
-def add_location(current_user, project_id):
+@app.route("/api/create_event_card", methods=["POST"])
+def create_event_card():
     data = request.get_json()
+    username = data.get("username")
+    event_id = data.get("eventID")
+    
+    if not all([username, event_id]):
+        return jsonify({"message": "missing_parameters"})
     
     
-    required_fields = ['name', 'latitude', 'longitude']
-    for field in required_fields:
-        if field not in data:
-            return jsonify({'message': f'Missing required field: {field}'}), 400
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    
+    if username != event.get("host"):
+        return jsonify({"message": "not_authorized"})
     
     
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    if current_user['_id'] != project['created_by'] and current_user['_id'] not in project.get('contributors', []):
-        return jsonify({'message': 'Unauthorized!'}), 403
-    
-    
-    new_location = {
-        'project_id': ObjectId(project_id),
-        'name': data['name'],
-        'latitude': float(data['latitude']),
-        'longitude': float(data['longitude']),
-        'description': data.get('description', ''),
-        'added_by': current_user['_id'],
-        'created_at': datetime.datetime.utcnow()
-    }
-    
-    location_id = mongo.db.locations.insert_one(new_location).inserted_id
-    
-    
-    mongo.db.projects.update_one(
-        {'_id': ObjectId(project_id)},
-        {'$push': {'collection_sites': location_id}}
-    )
-    
-    return jsonify({
-        'message': 'Location added successfully!',
-        'location_id': str(location_id)
-    })
-
-@app.route('/api/project_locations/<project_id>', methods=['GET'])
-@token_required
-def project_locations(current_user, project_id):
-    
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    locations = list(mongo.db.locations.find({'project_id': ObjectId(project_id)}))
-    
-    
-    for location in locations:
-        location['_id'] = str(location['_id'])
-        location['project_id'] = str(location['project_id'])
-        location['added_by'] = str(location['added_by'])
-    
-    return jsonify(locations)
-
-@app.route('/api/post_message/<project_id>', methods=['POST'])
-@token_required
-def post_message(current_user, project_id):
-    data = request.get_json()
-    
-    if 'content' not in data:
-        return jsonify({'message': 'Message content is required!'}), 400
-    
-    
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    if current_user['_id'] != project['created_by'] and current_user['_id'] not in project.get('contributors', []):
-        return jsonify({'message': 'Unauthorized!'}), 403
-    
-    
-    new_message = {
-        'project_id': ObjectId(project_id),
-        'user_id': current_user['_id'],
-        'content': data['content'],
-        'created_at': datetime.datetime.utcnow()
-    }
-    
-    message_id = mongo.db.messages.insert_one(new_message).inserted_id
-    
-    return jsonify({
-        'message': 'Message posted successfully!',
-        'message_id': str(message_id)
-    })
-
-@app.route('/api/project_discussion/<project_id>', methods=['GET'])
-@token_required
-def project_discussion(current_user, project_id):
-    
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    if current_user['_id'] != project['created_by'] and current_user['_id'] not in project.get('contributors', []):
-        return jsonify({'message': 'Unauthorized!'}), 403
-    
-    
-    messages = list(mongo.db.messages.find({'project_id': ObjectId(project_id)}).sort('created_at', 1))
-    
-    
-    for message in messages:
-        message['_id'] = str(message['_id'])
-        message['project_id'] = str(message['project_id'])
+    existing_card = eventCards.find_one({"eventID": int(event_id)})
+    if existing_card:
         
-        
-        user_id = message['user_id']
-        user = mongo.db.users.find_one({'_id': user_id})
-        
-        message['user'] = {
-            'id': str(user['_id']),
-            'name': user['name'],
-            'profile_picture': user.get('profile_picture', '')
-        }
-        
-        message['user_id'] = str(message['user_id'])
-    
-    return jsonify(messages)
-
-@app.route('/api/project_data/<project_id>', methods=['GET'])
-@token_required
-def project_data(current_user, project_id):
-    
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    if current_user['_id'] != project['created_by'] and current_user['_id'] not in project.get('contributors', []):
-        return jsonify({'message': 'Unauthorized!'}), 403
-    
-    
-    pictures_count = mongo.db.pictures.count_documents({'project_id': ObjectId(project_id)})
-    matching_pictures_count = mongo.db.pictures.count_documents({
-        'project_id': ObjectId(project_id),
-        'is_match': True
-    })
-    locations_count = mongo.db.locations.count_documents({'project_id': ObjectId(project_id)})
-    contributors_count = len(project.get('contributors', [])) + 1  
-    
-    
-    datasets = [
-        {
-            'id': 'pictures',
-            'name': 'Plant Pictures',
-            'description': 'All plant pictures with identification data',
-            'count': pictures_count
-        },
-        {
-            'id': 'matching_pictures',
-            'name': 'Matching Plant Pictures',
-            'description': f'Pictures that match the target plant type ({project["plant_type"]})',
-            'count': matching_pictures_count
-        },
-        {
-            'id': 'locations',
-            'name': 'Collection Locations',
-            'description': 'Data collection site locations',
-            'count': locations_count
-        },
-        {
-            'id': 'contributors',
-            'name': 'Contributors',
-            'description': 'Project contributor information',
-            'count': contributors_count
-        },
-        {
-            'id': 'all',
-            'name': 'Complete Project Data',
-            'description': 'All data associated with this project',
-            'count': pictures_count + locations_count + contributors_count
-        }
-    ]
-    
-    return jsonify({
-        'project_id': str(project['_id']),
-        'project_title': project['title'],
-        'plant_type': project['plant_type'],
-        'action_type': project['action_type'],
-        'progress': {
-            'submissions_completed': project['submissions_completed'],
-            'submissions_needed': project['submissions_needed'],
-            'completion_percentage': (project['submissions_completed'] / project['submissions_needed']) * 100 if project['submissions_needed'] > 0 else 0
-        },
-        'datasets': datasets
-    })
-
-@app.route('/api/project_datasets/<project_id>', methods=['GET'])
-@token_required
-def project_datasets(current_user, project_id):
-    
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    if current_user['_id'] != project['created_by']:
-        return jsonify({'message': 'Unauthorized! Only project creators can access datasets.'}), 403
-    
-    
-    datasets = [
-        {
-            'id': 'pictures',
-            'name': 'Plant Pictures',
-            'description': 'All plant pictures with identification data',
-            'fields': ['id', 'user_id', 'location', 'plant_identification', 'is_match', 'uploaded_at', 'notes']
-        },
-        {
-            'id': 'matching_pictures',
-            'name': 'Matching Plant Pictures',
-            'description': f'Pictures that match the target plant type ({project["plant_type"]})',
-            'fields': ['id', 'user_id', 'location', 'plant_identification', 'uploaded_at', 'notes']
-        },
-        {
-            'id': 'locations',
-            'name': 'Collection Locations',
-            'description': 'Data collection site locations',
-            'fields': ['id', 'name', 'latitude', 'longitude', 'description', 'added_by', 'created_at']
-        },
-        {
-            'id': 'contributors',
-            'name': 'Contributors',
-            'description': 'Project contributor information',
-            'fields': ['id', 'name', 'email', 'expertise']
-        },
-        {
-            'id': 'all',
-            'name': 'Complete Project Data',
-            'description': 'All data associated with this project',
-            'fields': ['various fields from all datasets']
-        }
-    ]
-    
-    return jsonify(datasets)
-
-@app.route('/api/download_data/<project_id>', methods=['GET'])
-@token_required
-def download_data(current_user, project_id):
-    
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    if current_user['_id'] != project['created_by']:
-        return jsonify({'message': 'Unauthorized! Only project creators can download data.'}), 403
-    
-    
-    pictures = list(mongo.db.pictures.find({'project_id': ObjectId(project_id)}))
-    
-    
-    output = io.StringIO()
-    writer = csv.writer(output)
-    
-    
-    writer.writerow([
-        'ID', 'User ID', 'User Name', 'Latitude', 'Longitude',
-        'Plant Species', 'Confidence', 'Is Match', 'Notes', 'Uploaded At'
-    ])
-    
-    
-    for picture in pictures:
-        user = mongo.db.users.find_one({'_id': picture['user_id']})
-        user_name = user['name'] if user else 'Unknown'
-        
-        location = picture.get('location', {})
-        latitude = location.get('latitude', '')
-        longitude = location.get('longitude', '')
-        
-        identification = picture.get('plant_identification', {})
-        species = identification.get('species', 'unknown')
-        confidence = identification.get('confidence', 0.0)
-        
-        writer.writerow([
-            str(picture['_id']),
-            str(picture['user_id']),
-            user_name,
-            latitude,
-            longitude,
-            species,
-            confidence,
-            picture.get('is_match', False),
-            picture.get('notes', ''),
-            picture.get('uploaded_at', '').isoformat() if picture.get('uploaded_at') else ''
-        ])
-    
-    
-    output.seek(0)
-    return send_file(
-        io.BytesIO(output.getvalue().encode('utf-8')),
-        mimetype='text/csv',
-        as_attachment=True,
-        download_name=f'project_{project_id}_data.csv'
-    )
-
-@app.route('/api/download_dataset/<project_id>/<dataset_id>', methods=['GET'])
-@token_required
-def download_dataset(current_user, project_id, dataset_id):
-    
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    if current_user['_id'] != project['created_by']:
-        return jsonify({'message': 'Unauthorized! Only project creators can download datasets.'}), 403
-    
-    
-    output = io.StringIO()
-    writer = csv.writer(output)
-    
-    
-    if dataset_id == 'pictures':
-        
-        pictures = list(mongo.db.pictures.find({'project_id': ObjectId(project_id)}))
-        
-        
-        writer.writerow([
-            'ID', 'User ID', 'User Name', 'Latitude', 'Longitude',
-            'Plant Species', 'Confidence', 'Is Match', 'Notes', 'Uploaded At'
-        ])
-        
-        
-        for picture in pictures:
-            user = mongo.db.users.find_one({'_id': picture['user_id']})
-            user_name = user['name'] if user else 'Unknown'
-            
-            location = picture.get('location', {})
-            latitude = location.get('latitude', '')
-            longitude = location.get('longitude', '')
-            
-            identification = picture.get('plant_identification', {})
-            species = identification.get('species', 'unknown')
-            confidence = identification.get('confidence', 0.0)
-            
-            writer.writerow([
-                str(picture['_id']),
-                str(picture['user_id']),
-                user_name,
-                latitude,
-                longitude,
-                species,
-                confidence,
-                picture.get('is_match', False),
-                picture.get('notes', ''),
-                picture.get('uploaded_at', '').isoformat() if picture.get('uploaded_at') else ''
-            ])
-        
-        filename = f'project_{project_id}_pictures.csv'
-    
-    elif dataset_id == 'matching_pictures':
-        
-        pictures = list(mongo.db.pictures.find({
-            'project_id': ObjectId(project_id),
-            'is_match': True
-        }))
-        
-        
-        writer.writerow([
-            'ID', 'User ID', 'User Name', 'Latitude', 'Longitude',
-            'Plant Species', 'Confidence', 'Notes', 'Uploaded At'
-        ])
-        
-        
-        for picture in pictures:
-            user = mongo.db.users.find_one({'_id': picture['user_id']})
-            user_name = user['name'] if user else 'Unknown'
-            
-            location = picture.get('location', {})
-            latitude = location.get('latitude', '')
-            longitude = location.get('longitude', '')
-            
-            identification = picture.get('plant_identification', {})
-            species = identification.get('species', 'unknown')
-            confidence = identification.get('confidence', 0.0)
-            
-            writer.writerow([
-                str(picture['_id']),
-                str(picture['user_id']),
-                user_name,
-                latitude,
-                longitude,
-                species,
-                confidence,
-                picture.get('notes', ''),
-                picture.get('uploaded_at', '').isoformat() if picture.get('uploaded_at') else ''
-            ])
-        
-        filename = f'project_{project_id}_matching_pictures.csv'
-    
-    elif dataset_id == 'locations':
-        
-        locations = list(mongo.db.locations.find({'project_id': ObjectId(project_id)}))
-        
-        
-        writer.writerow([
-            'ID', 'Name', 'Latitude', 'Longitude', 'Description', 'Added By', 'Created At'
-        ])
-        
-        
-        for location in locations:
-            user = mongo.db.users.find_one({'_id': location['added_by']})
-            user_name = user['name'] if user else 'Unknown'
-            
-            writer.writerow([
-                str(location['_id']),
-                location['name'],
-                location['latitude'],
-                location['longitude'],
-                location.get('description', ''),
-                user_name,
-                location.get('created_at', '').isoformat() if location.get('created_at') else ''
-            ])
-        
-        filename = f'project_{project_id}_locations.csv'
-    
-    elif dataset_id == 'contributors':
-        
-        contributor_ids = project.get('contributors', []) + [project['created_by']]
-        contributors = list(mongo.db.users.find({'_id': {'$in': contributor_ids}}))
-        
-        
-        writer.writerow([
-            'ID', 'Name', 'Email', 'Expertise', 'Is Creator', 'Contributions'
-        ])
-        
-        
-        for contributor in contributors:
-            
-            contribution_count = mongo.db.pictures.count_documents({
-                'project_id': ObjectId(project_id),
-                'user_id': contributor['_id']
-            })
-            
-            writer.writerow([
-                str(contributor['_id']),
-                contributor['name'],
-                contributor['email'],
-                ', '.join(contributor.get('expertise', [])),
-                str(contributor['_id'] == project['created_by']),
-                contribution_count
-            ])
-        
-        filename = f'project_{project_id}_contributors.csv'
-    
-    elif dataset_id == 'all':
-        
-        
-        
-        return download_data(current_user, project_id)
-    
-    else:
-        return jsonify({'message': 'Invalid dataset ID!'}), 400
-    
-    
-    output.seek(0)
-    return send_file(
-        io.BytesIO(output.getvalue().encode('utf-8')),
-        mimetype='text/csv',
-        as_attachment=True,
-        download_name=filename
-    )
-
-@app.route('/api/download_all_data/<project_id>', methods=['GET'])
-@token_required
-def download_all_data(current_user, project_id):
-    
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    if current_user['_id'] != project['created_by']:
-        return jsonify({'message': 'Unauthorized! Only project creators can download all data.'}), 403
-    
-    
-    
-    return download_data(current_user, project_id)
-
-@app.route('/api/project_visualization/<project_id>', methods=['GET'])
-@token_required
-def project_visualization(current_user, project_id):
-    
-    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-    
-    if not project:
-        return jsonify({'message': 'Project not found!'}), 404
-    
-    
-    if current_user['_id'] != project['created_by'] and current_user['_id'] not in project.get('contributors', []):
-        return jsonify({'message': 'Unauthorized!'}), 403
-    
-    
-    viz_type = request.args.get('type', 'map')
-    
-    
-    if viz_type == 'map':
-        
-        pictures = list(mongo.db.pictures.find({
-            'project_id': ObjectId(project_id),
-            'location.latitude': {'$exists': True},
-            'location.longitude': {'$exists': True}
-        }))
-        
-        
-        map_data = []
-        for picture in pictures:
-            location = picture.get('location', {})
-            identification = picture.get('plant_identification', {})
-            
-            map_data.append({
-                'id': str(picture['_id']),
-                'latitude': location.get('latitude'),
-                'longitude': location.get('longitude'),
-                'species': identification.get('species', 'unknown'),
-                'confidence': identification.get('confidence', 0),
-                'is_match': picture.get('is_match', False),
-                'uploaded_at': picture.get('uploaded_at', '').isoformat() if picture.get('uploaded_at') else ''
-            })
-        
-        return jsonify(map_data)
-    
-    elif viz_type == 'time_series':
-        
-        pictures = list(mongo.db.pictures.find({
-            'project_id': ObjectId(project_id),
-            'uploaded_at': {'$exists': True}
-        }).sort('uploaded_at', 1))
-        
-        
-        time_data = []
-        cumulative_matches = 0
-        
-        for picture in pictures:
-            if picture.get('is_match', False):
-                cumulative_matches += 1
-            
-            time_data.append({
-                'date': picture.get('uploaded_at', '').isoformat() if picture.get('uploaded_at') else '',
-                'cumulative_matches': cumulative_matches,
-                'is_match': picture.get('is_match', False)
-            })
-        
-        return jsonify(time_data)
-    
-    elif viz_type == 'confidence':
-        
-        pictures = list(mongo.db.pictures.find({
-            'project_id': ObjectId(project_id),
-            'plant_identification.confidence': {'$exists': True}
-        }))
-        
-        
-        confidence_data = []
-        
-        for picture in pictures:
-            identification = picture.get('plant_identification', {})
-            confidence_data.append({
-                'id': str(picture['_id']),
-                'species': identification.get('species', 'unknown'),
-                'confidence': identification.get('confidence', 0),
-                'is_match': picture.get('is_match', False)
-            })
-        
-        return jsonify(confidence_data)
-    
-    else:
-        return jsonify({'message': 'Invalid visualization type!'}), 400
-
-# Add these simplified routes to match our frontend implementation
-
-@app.route('/api/user_projects', methods=['GET'])
-def simplified_user_projects():
-    # Get username from query parameter instead of JWT
-    username = request.args.get('username')
-    if not username:
-        return jsonify({'message': 'Username is required!'}), 400
-    
-    # Find user by username
-    user = mongo.db.users.find_one({'name': username})
-    if not user:
-        return jsonify({'projects': []}), 200
-    
-    # Find projects created by this user
-    projects = list(mongo.db.projects.find({'created_by': user['_id']}))
-    
-    # Format projects for the response
-    formatted_projects = []
-    for project in projects:
-        formatted_projects.append({
-            'id': str(project['_id']),
-            'title': project['title'],
-            'description': project.get('description', ''),
-            'plantType': project.get('plant_type', ''),
-            'dataNeeded': project.get('additional_notes', ''),
-            'location': project.get('location', {}).get('name', ''),
-            'status': project.get('status', 'pending'),
-            'contributors': len(project.get('contributors', [])),
-            'dataPoints': project.get('submissions_completed', 0),
-            'creator': username
+        existing_card['_id'] = str(existing_card['_id'])
+        return jsonify({
+            "message": "card_exists",
+            "card_data": existing_card
         })
     
-    return jsonify({'projects': formatted_projects})
-
-@app.route('/api/user_profile', methods=['GET'])
-def simplified_user_profile():
-    # Get username from query parameter
-    username = request.args.get('username')
-    if not username:
-        return jsonify({'message': 'Username is required!'}), 400
-    
-    # Find user by username
-    user = mongo.db.users.find_one({'name': username})
-    if not user:
-        return jsonify({'location': ''}), 200
-    
-    # Return simplified profile
-    return jsonify({
-        'location': user.get('location', {}).get('name', '')
-    })
-
-@app.route('/api/available_projects', methods=['GET'])
-def simplified_available_projects():
-    # Get location from query parameter
-    location = request.args.get('location')
-    if not location:
-        return jsonify({'projects': []}), 200
-    
-    # Find projects that are open
-    projects = list(mongo.db.projects.find({'status': 'open'}))
-    
-    # Format projects for the response
-    formatted_projects = []
-    for project in projects:
-        # Find the creator's username
-        creator = mongo.db.users.find_one({'_id': project['created_by']})
-        creator_name = creator['name'] if creator else 'Unknown'
-        
-        # Calculate a simple distance (mocked)
-        import random
-        distance = round(random.uniform(0.5, 20.0), 1)
-        
-        formatted_projects.append({
-            'id': str(project['_id']),
-            'title': project['title'],
-            'description': project.get('description', ''),
-            'plantType': project.get('plant_type', ''),
-            'dataNeeded': project.get('additional_notes', ''),
-            'location': project.get('location', {}).get('name', ''),
-            'status': project.get('status', 'open'),
-            'distance': distance,
-            'creator': creator_name
-        })
-    
-    return jsonify({'projects': formatted_projects})
-
-@app.route('/api/get_project', methods=['GET'])
-def simplified_get_project():
-    # Get project ID from query parameter
-    project_id = request.args.get('projectID')
-    if not project_id:
-        return jsonify({'success': False, 'message': 'Project ID is required!'}), 400
     
     try:
-        # Find the project
-        project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-        if not project:
-            return jsonify({'success': False, 'message': 'Project not found!'}), 404
+        marqeta = MarqetaAPI()
+        user_token = marqeta.create_user(event_id)
+        card_data = marqeta.create_card(user_token)
         
-        # Find the creator's username
-        creator = mongo.db.users.find_one({'_id': project['created_by']})
-        creator_name = creator['name'] if creator else 'Unknown'
         
-        # Format the project data
-        formatted_project = {
-            'id': str(project['_id']),
-            'title': project['title'],
-            'description': project.get('description', ''),
-            'plantType': project.get('plant_type', ''),
-            'dataNeeded': project.get('additional_notes', ''),
-            'location': project.get('location', {}).get('name', ''),
-            'status': project.get('status', 'pending'),
-            'contributors': [str(c) for c in project.get('contributors', [])],
-            'dataPoints': project.get('submissions_completed', 0),
-            'creator': creator_name,
-            'createdAt': project.get('created_at', '').isoformat() if project.get('created_at') else ''
+        card_record = {
+            "eventID": int(event_id),
+            "marqeta_user_token": user_token,
+            "marqeta_card_token": card_data["token"],
+            "card_pan": card_data["pan"],
+            "card_cvv": card_data["cvv"],
+            "card_expiration": card_data["expiration"],
+            "current_balance": 0,
+            "total_contributions": 0,
+            "contributions_count": 0,
+            "created_at": datetime.now().isoformat(),
+            "created_by": username
         }
         
-        return jsonify({'success': True, 'project': formatted_project})
-    except:
-        return jsonify({'success': False, 'message': 'Invalid project ID!'}), 400
-    
-@app.route('/api/create_project', methods=['POST'])
-def simplified_create_project():
-    try:
-        data = request.get_json()
         
-        # Get username
-        username = data.get('username')
-        print(f"Received username: {username}")
-        print(f"Received data: {data}")
+        result = eventCards.insert_one(card_record)
         
-        if not username:
-            print("Username is missing")
-            return jsonify({'success': False, 'message': 'Username is required!'}), 400
         
-        # Find user by username
-        user = mongo.db.users.find_one({'name': username})
-        if not user:
-            print(f"User not found: {username}")
-            # Let's print out all users to help debug
-            all_users = list(mongo.db.users.find({}, {'name': 1}))
-            print("Existing users:")
-            for existing_user in all_users:
-                print(existing_user.get('name'))
-            
-            return jsonify({'success': False, 'message': 'User not found!'}), 404
-        
-        # Create new project with simplified fields
-        new_project = {
-            'title': data.get('title', ''),
-            'description': data.get('description', ''),
-            'plant_type': data.get('plantType', ''),
-            'additional_notes': data.get('dataNeeded', ''),
-            'location': {'name': data.get('location', '')},
-            'created_by': user['_id'],
-            'contributors': [],
-            'submissions_completed': 0,
-            'submissions_needed': 10,  # Default value
-            'status': 'pending',
-            'created_at': datetime.datetime.utcnow(),
-            'action_type': 'research'  # Default value
-        }
-        
-        project_id = mongo.db.projects.insert_one(new_project).inserted_id
+        card_record['_id'] = str(result.inserted_id)
         
         return jsonify({
-            'success': True,
-            'message': 'Project created successfully!',
-            'projectId': str(project_id)
-        }), 201
-    
+            "message": "success",
+            "card_data": card_record
+        })
     except Exception as e:
-        print(f"Unexpected error: {e}")
-        return jsonify({'success': False, 'message': 'An unexpected error occurred'}), 500
-
-@app.route('/api/join_project', methods=['POST'])
-def simplified_join_project():
+        print(e)
+        return jsonify({"message": "card_creation_error", "error": str(e)})
+    
+@app.route("/api/manual_payment_success", methods=["POST"])
+def manual_payment_success():
+    print("Manual payment success endpoint called!")
     data = request.get_json()
+    event_id = data.get("eventID")
+    username = data.get("username")
+    amount = data.get("amount")
+    payment_intent_id = data.get("paymentIntent")
     
-    # Get username and project ID
-    username = data.get('username')
-    project_id = data.get('projectId')
+    print(f"Processing payment for event {event_id}, amount ${amount}")
     
-    if not username or not project_id:
-        return jsonify({'success': False, 'message': 'Username and project ID are required!'}), 400
     
-    # Find user by username
-    user = mongo.db.users.find_one({'name': username})
-    if not user:
-        return jsonify({'success': False, 'message': 'User not found!'}), 404
+    card_load_amount = amount * 0.99
+    
+    
+    payment_record = {
+        "eventID": int(event_id),
+        "username": username,
+        "amount": amount,
+        "fee": amount - card_load_amount,
+        "card_load_amount": card_load_amount,
+        "stripe_payment_id": payment_intent_id,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    
+    eventPayments.insert_one(payment_record)
+    
+    print(f"Looking for card with eventID={int(event_id)}")
+    
+    event_card = eventCards.find_one({"eventID": int(event_id)})
+    print(f"Card found: {event_card is not None}")
+    
+    if event_card:
+        marqeta = MarqetaAPI()
+        user_token = event_card["marqeta_user_token"]
+        
+        try:
+            print(f"Loading card with ${card_load_amount}")
+            marqeta.load_card(user_token, str(card_load_amount))
+            
+            
+            update_result = eventCards.update_one(
+                {"eventID": int(event_id)},
+                {"$inc": {
+                    "current_balance": card_load_amount,
+                    "total_contributions": amount,
+                    "contributions_count": 1
+                }}
+            )
+            print(f"DB update result: matched={update_result.matched_count}, modified={update_result.modified_count}")
+            
+            return jsonify({"status": "success"})
+        except Exception as e:
+            print(f"Error loading card: {str(e)}")
+            return jsonify({"status": "error", "message": str(e)})
+    
+    return jsonify({"status": "error", "message": "Card not found"})
+
+@app.route("/api/stripe_webhook", methods=["POST"])
+def stripe_webhook():
+    print("Webhook endpoint hit!")
+    payload = request.get_data(as_text=True)
+    sig_header = request.headers.get('Stripe-Signature')
+    
+    print(f"Signature header present: {sig_header is not None}")
+    print(f"Webhook secret: {os.getenv('STRIPE_WEBHOOK_SECRET')[:5]}...")  
     
     try:
-        # Find the project
-        project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-        if not project:
-            return jsonify({'success': False, 'message': 'Project not found!'}), 404
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, os.getenv("STRIPE_WEBHOOK_SECRET")
+        )
+        print("Webhook verified successfully!")
         
-        # Add user to contributors if not already there
-        if user['_id'] not in project.get('contributors', []):
-            mongo.db.projects.update_one(
-                {'_id': ObjectId(project_id)},
-                {'$push': {'contributors': user['_id']}}
-            )
         
-        return jsonify({'success': True, 'message': 'Joined project successfully!'})
-    except:
-        return jsonify({'success': False, 'message': 'Invalid project ID!'}), 400
+    except ValueError as e:
+        print(f"Invalid payload: {str(e)}")
+        return jsonify({"message": "Invalid payload"}), 400
+    except stripe.error.SignatureVerificationError as e:
+        print(f"Invalid signature: {str(e)}")
+        return jsonify({"message": "Invalid signature"}), 400
 
-@app.route('/api/project_data', methods=['GET'])
-def simplified_project_data():
-    # Get username
-    username = request.args.get('username')
-    if not username:
-        return jsonify({'data': []}), 200
+@app.route("/api/get_event_card", methods=["GET"])
+def get_event_card():
+    event_id = request.args.get("eventID")
+    username = request.args.get("username")
     
-    # Find user by username
-    user = mongo.db.users.find_one({'name': username})
-    if not user:
-        return jsonify({'data': []}), 200
+    if not all([event_id, username]):
+        return jsonify({"message": "missing_parameters"})
     
-    # Find projects where user is creator or contributor
-    user_projects = list(mongo.db.projects.find({
-        '$or': [
-            {'created_by': user['_id']},
-            {'contributors': user['_id']}
-        ]
-    }))
     
-    # Format projects for download
-    formatted_data = []
-    for project in user_projects:
-        formatted_data.append({
-            'id': str(project['_id']),
-            'title': project['title'],
-            'status': project.get('status', 'pending'),
-            'dataPoints': project.get('submissions_completed', 0),
-            'lastUpdated': project.get('updated_at', '').isoformat() if project.get('updated_at') else ''
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    
+    if username not in event.get("members", []) and username != event.get("host"):
+        return jsonify({"message": "not_authorized"})
+    
+    
+    card = eventCards.find_one({"eventID": int(event_id)})
+    if not card:
+        return jsonify({"message": "card_not_found"})
+    
+    
+    payments = list(eventPayments.find({"eventID": int(event_id)}))
+    for payment in payments:
+        payment["_id"] = str(payment["_id"])
+    
+    
+    user_contributed = any(payment["username"] == username for payment in payments)
+    
+    
+    is_host = (username == event.get("host"))
+    
+    card_details = {
+        "eventID": card["eventID"],
+        "current_balance": card["current_balance"],
+        "total_contributions": card["total_contributions"],
+        "contributions_count": card["contributions_count"],
+        "payments": payments,
+        "user_contributed": user_contributed
+    }
+    
+    
+    if is_host or user_contributed:
+        card_details.update({
+            "card_pan": card["card_pan"],
+            "card_cvv": card["card_cvv"],
+            "card_expiration": card["card_expiration"]
         })
     
-    return jsonify({'data': formatted_data})
+    return jsonify({
+        "message": "success",
+        "card": card_details
+    })
 
-# Add simplified routes for the project page tabs
-@app.route('/api/project_contributors', methods=['GET'])
-def simplified_project_contributors():
-    # Get project ID
-    project_id = request.args.get('projectID')
-    if not project_id:
-        return jsonify({'success': False, 'message': 'Project ID is required!'}), 400
+@app.route("/api/create_payment_intent", methods=["POST"])
+def create_payment_intent():
+    data = request.get_json()
+    username = data.get("username")
+    event_id = data.get("eventID")
+    amount = data.get("amount", 0)
+    
+    if not all([username, event_id, amount]) or amount <= 0:
+        return jsonify({"message": "missing_parameters"})
+    
+    
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    
+    if username not in event.get("members", []) and username != event.get("host"):
+        return jsonify({"message": "not_authorized"})
+    
     
     try:
-        # Find the project
-        project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-        if not project:
-            return jsonify({'success': False, 'message': 'Project not found!'}), 404
         
-        # Get contributors
-        contributors = []
-        if project.get('contributors'):
-            for contributor_id in project['contributors']:
-                user = mongo.db.users.find_one({'_id': contributor_id})
-                if user:
-                    # Count data points submitted by this user
-                    data_points = mongo.db.pictures.count_documents({
-                        'project_id': ObjectId(project_id),
-                        'user_id': user['_id']
-                    })
-                    
-                    contributors.append({
-                        'username': user['name'],
-                        'dataPoints': data_points,
-                        'joinDate': user.get('created_at', '').isoformat() if user.get('created_at') else ''
-                    })
+        stripe_amount = int(float(amount) * 100)
         
-        return jsonify({'success': True, 'contributors': contributors})
-    except:
-        return jsonify({'success': False, 'message': 'Invalid project ID!'}), 400
-
-@app.route('/api/project_visualization', methods=['GET'])
-def simplified_project_visualization():
-    # Get project ID and visualization type
-    project_id = request.args.get('projectID')
-    viz_type = request.args.get('type', 'timeline')
-    
-    if not project_id:
-        return jsonify({'success': False, 'message': 'Project ID is required!'}), 400
-    
-    try:
-        # Find the project
-        project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
-        if not project:
-            return jsonify({'success': False, 'message': 'Project not found!'}), 404
-        
-        # Create simplified visualization data
-        if viz_type == 'timeline':
-            chart_data = [
-                {'date': '2025-03-01', 'value': 5},
-                {'date': '2025-03-15', 'value': 12},
-                {'date': '2025-04-01', 'value': 18},
-                {'date': '2025-04-10', 'value': 25}
-            ]
-            
-            return jsonify({
-                'success': True,
-                'data': {
-                    'title': 'Data Collection Timeline',
-                    'chartData': chart_data,
-                    'insights': [
-                        'Data collection has been steadily increasing',
-                        'Most contributions occur on weekends',
-                        'The project is on track to meet its target'
-                    ]
-                }
-            })
-        
-        elif viz_type == 'distribution':
-            chart_data = [
-                {'category': 'Maple Trees', 'count': 15},
-                {'category': 'Oak Trees', 'count': 8},
-                {'category': 'Pine Trees', 'count': 12},
-                {'category': 'Others', 'count': 5}
-            ]
-            
-            return jsonify({
-                'success': True,
-                'data': {
-                    'title': 'Plant Species Distribution',
-                    'chartData': chart_data,
-                    'insights': [
-                        'Maple trees are the most commonly reported',
-                        'Three species make up 87% of all reports',
-                        'Species diversity increases in urban areas'
-                    ]
-                }
-            })
-        
-        else:
-            return jsonify({'success': False, 'message': 'Invalid visualization type!'}), 400
-    
-    except:
-        return jsonify({'success': False, 'message': 'Invalid project ID!'}), 400
-    
-
-def identify_plant(image_path: str) -> Dict[str, Any]:
-    """
-    Identify plant species from an image using the Pl@ntNet API.
-    Gets API key from .env file.
-    
-    Args:
-        image_path (str): Path to the image file
-        
-    Returns:
-        Dict[str, Any]: Dictionary containing species information and confidence scores
-    """
-    # Load environment variables from .env file
-    load_dotenv()
-    
-    # Get API key from environment variable
-    api_key = os.environ.get("PLANTNET_API_KEY")
-    if not api_key:
-        return {
-            "error": "API key not found. Make sure PLANTNET_API_KEY is set in your .env file.",
-            "species": "unknown",
-            "confidence": 0.0
-        }
-    
-    try:
-        # Verify file exists and is readable
-        if not os.path.isfile(image_path):
-            return {
-                "error": f"File not found: {image_path}",
-                "species": "unknown",
-                "confidence": 0.0
+        payment_intent = stripe.PaymentIntent.create(
+            amount=stripe_amount,
+            currency="usd",
+            metadata={
+                "event_id": event_id,
+                "username": username
             }
+        )
         
-        # Pl@ntNet API endpoint
-        url = "https://my-api.plantnet.org/v2/identify/all"
-        
-        # API parameters
-        params = {
-            "api-key": api_key,
-            "include-related-images": "false",
-        }
-        
-        # Open image file
-        with open(image_path, "rb") as image_file:
-            files = {
-                "images": (os.path.basename(image_path), image_file, "image/jpeg")
-            }
-            
-            # Make the API request
-            response = requests.post(url, params=params, files=files)
-            
-            # Check if request was successful
-            if response.status_code == 200:
-                data = response.json()
-                
-                # If we have results
-                if "results" in data and len(data["results"]) > 0:
-                    # Get the top result
-                    top_result = data["results"][0]
-                    scientific_name = top_result["species"]["scientificNameWithoutAuthor"]
-                    common_names = top_result["species"].get("commonNames", [])
-                    common_name = common_names[0] if common_names else "No common name available"
-                    confidence = top_result["score"]
-                    
-                    return {
-                        "species": scientific_name,
-                        "common_name": common_name,
-                        "confidence": confidence,
-                        "all_results": data["results"]  # Include all results for reference
-                    }
-                else:
-                    return {
-                        "species": "unknown",
-                        "confidence": 0.0,
-                        "error": "No identification results returned"
-                    }
-            else:
-                return {
-                    "species": "unknown",
-                    "confidence": 0.0,
-                    "error": f"API error: {response.status_code} - {response.text}"
-                }
-                
+        return jsonify({
+            "message": "success",
+            "clientSecret": payment_intent.client_secret
+        })
     except Exception as e:
-        return {
-            "species": "unknown",
-            "confidence": 0.0,
-            "error": f"Error in plant identification: {str(e)}"
-        }
+        return jsonify({"message": "payment_error", "error": str(e)})
     
+@app.route("/api/update_arrival_status", methods=["POST"])
+def update_arrival_status():
+    data = request.get_json()
+    username = data.get("username")
+    event_id = data.get("eventID")
+    status = data.get("status")
+    arrival_time = data.get("arrivalTime")
+    
+    if not all([username, event_id, status]):
+        return jsonify({"message": "missing_parameters"})
+    
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    
+    if username not in event.get("members", []) and username != event.get("host"):
+        return jsonify({"message": "not_authorized"})
+    
+    try:
+        
+        arrivalStatusDB.update_one(
+            {"eventID": int(event_id), "username": username},
+            {"$set": {
+                "status": status,
+                "arrivalTime": arrival_time,
+                "timestamp": datetime.now().isoformat()
+            }},
+            upsert=True
+        )
+        
+        return jsonify({"message": "success"})
+    except Exception as e:
+        print(f"Error updating arrival status: {str(e)}")
+        return jsonify({"message": "error", "error": str(e)})
+
+@app.route("/api/get_arrival_status", methods=["GET"])
+def get_arrival_status():
+    event_id = request.args.get("eventID")
+    username = request.args.get("username")
+    
+    if not all([event_id, username]):
+        return jsonify({"message": "missing_parameters"})
+    
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    
+    if username not in event.get("members", []) and username != event.get("host"):
+        return jsonify({"message": "not_authorized"})
+    
+    arrival_status = arrivalStatusDB.find_one({
+        "eventID": int(event_id), 
+        "username": username
+    })
+    
+    if arrival_status:
+        return jsonify({
+            "message": "success",
+            "status": arrival_status.get("status"),
+            "arrivalTime": arrival_status.get("arrivalTime")
+        })
+    
+    return jsonify({
+        "message": "success",
+        "status": None,
+        "arrivalTime": None
+    })
+
+@app.route("/api/get_group_arrival_stats", methods=["GET"])
+def get_group_arrival_stats():
+    event_id = request.args.get("eventID")
+    
+    if not event_id:
+        return jsonify({"message": "missing_parameters"})
+    
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    
+    
+    total_members = len(event.get("members", [])) + 1  
+    
+    
+    arrival_statuses = list(arrivalStatusDB.find({"eventID": int(event_id)}))
+    
+    
+    status_counts = {
+        "onTime": len([s for s in arrival_statuses if s.get("status") == "On Time"]),
+        "early": len([s for s in arrival_statuses if s.get("status") == "Early"]),
+        "late": len([s for s in arrival_statuses if s.get("status") == "Late"]),
+        "notReported": total_members - len(arrival_statuses)
+    }
+    
+    return jsonify({
+        "message": "success",
+        "stats": status_counts
+    })
+
+@app.route("/api/verify_login", methods=["POST"])
+def verify_login():
+    userCountDB.insert_one({"type" : "login", "time" : datetime.now().isoformat()})
+    data = request.get_json()
+    username = data.get("username")
+    password = data.get("password")
+    entry = passwordsDB.find_one({"username":username})
+    if(entry):
+        if(entry.get("password") == password):
+            return jsonify({"message" : "success"})
+        else:
+            return jsonify({"message": "invalid_password"})
+    else:
+        return jsonify({"message" : "invalid_user"})
+    
+@app.route("/api/add_user", methods=["POST"])
+def add_user():
+    data = request.get_json()
+    username = data.get("username")
+    password = data.get("password")
+    entry  = passwordsDB.find_one({"username":username})
+    if(entry):
+        return jsonify({"message":"user_exists"})
+    passwordsDB.insert_one({"username":username, "password":password})
+    return jsonify({"message":"success"})
+
+@app.route("/api/create_event", methods=["POST"])
+def create_event():
+    data = request.get_json()
+    username = data.get("username")
+    location = data.get("location")
+    time = data.get("time")
+    timeRange = data.get("timeRange")
+    isTimeFixed = data.get("isTimeFixed", True)  
+    isLocationFixed = data.get("isLocationFixed", True)  
+    
+    eventID = random.randint(100000, 999999)
+    while(eventsDB.find_one({"eventID" : eventID})):
+        eventID = eventID = random.randint(100000, 999999)
+    
+    eventsDB.insert_one({
+        "host": username, 
+        "eventID": eventID, 
+        "members": [], 
+        "posts": [], 
+        "location": location, 
+        "time": time, 
+        "timeRange": timeRange,
+        "isTimeFixed": isTimeFixed,
+        "isLocationFixed": isLocationFixed
+    })
+    
+    picturesDB.insert_one({"eventID": eventID, "pictures": {}})
+    timesDB.insert_one({"eventID": eventID, "times": {}})
+    ridesDB.insert_one({"eventID": eventID, "offers": [], "requests": []})
+    
+    return jsonify({"message": "success"})
+
+
+@app.route("/api/join_event", methods=["POST"])
+def join_event():
+    data = request.get_json()
+    username = data.get("username")
+    event_id = data.get("eventID")
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    if username in event.get("members", []):
+        return jsonify({"message": "already_joined"})
+    eventsDB.update_one(
+        {"eventID": int(event_id)},
+        {"$push": {"members": username}}
+    )
+    
+    return jsonify({
+        "message": "success",
+        "eventDetails": {
+            "host": event.get("host"),
+            "location": event.get("location"),
+            "time": event.get("time"),
+            "timeRange": event.get("timeRange")
+        }
+    })
+
+@app.route("/api/add_ride_offer", methods=["POST"])
+def add_ride_offer():
+    data = request.get_json()
+    username = data.get("username")
+    event_id = data.get("eventID")
+    departure_location = data.get("departureLocation")
+    departure_time = data.get("departureTime")
+    available_seats = data.get("availableSeats", 0)
+    notes = data.get("notes", "")
+    
+    if not all([username, event_id, departure_location, departure_time, available_seats]):
+        return jsonify({"message": "missing_parameters"})
+    
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    
+    if username not in event.get("members", []) and username != event.get("host"):
+        return jsonify({"message": "not_authorized"})
+    
+    
+    
+    ride_id = str(datetime.now().timestamp())
+    
+    ride_offer = {
+        "id": ride_id,
+        "driver": username,
+        "departureLocation": departure_location,
+        "departureTime": departure_time,
+        "availableSeats": int(available_seats),
+        "takenSeats": 0,
+        "passengers": [],
+        "notes": notes,
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    rides_doc = ridesDB.find_one({"eventID": int(event_id)})
+    
+    if rides_doc:
+        ride_offers = rides_doc.get("offers", [])
+        ride_offers.append(ride_offer)
+        
+        ridesDB.update_one(
+            {"eventID": int(event_id)},
+            {"$set": {"offers": ride_offers}}
+        )
+    else:
+        ridesDB.insert_one({
+            "eventID": int(event_id),
+            "offers": [ride_offer],
+            "requests": []
+        })
+    
+    return jsonify({
+        "message": "success",
+        "rideOffer": ride_offer
+    })
+
+@app.route("/api/join_ride", methods=["POST"])
+def join_ride():
+    data = request.get_json()
+    username = data.get("username")
+    event_id = data.get("eventID")
+    ride_id = data.get("rideID")
+    
+    if not all([username, event_id, ride_id]):
+        return jsonify({"message": "missing_parameters"})
+    
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    
+    if username not in event.get("members", []) and username != event.get("host"):
+        return jsonify({"message": "not_authorized"})
+    
+    rides_doc = ridesDB.find_one({"eventID": int(event_id)})
+    
+    if not rides_doc:
+        return jsonify({"message": "no_rides"})
+    
+    ride_offers = rides_doc.get("offers", [])
+    ride_found = False
+    
+    for i, offer in enumerate(ride_offers):
+        if offer.get("id") == ride_id:
+            ride_found = True
+            
+            if username == offer.get("driver"):
+                return jsonify({"message": "driver_cannot_join"})
+            
+            if username in offer.get("passengers", []):
+                return jsonify({"message": "already_joined"})
+            
+            if offer.get("takenSeats", 0) >= offer.get("availableSeats", 0):
+                return jsonify({"message": "ride_full"})
+            
+            
+            passengers = offer.get("passengers", [])
+            passengers.append(username)
+            
+            ride_offers[i]["passengers"] = passengers
+            ride_offers[i]["takenSeats"] = len(passengers)
+            
+            ridesDB.update_one(
+                {"eventID": int(event_id)},
+                {"$set": {"offers": ride_offers}}
+            )
+            
+            return jsonify({
+                "message": "success",
+                "rideOffer": ride_offers[i]
+            })
+    
+    if not ride_found:
+        return jsonify({"message": "ride_not_found"})
+
+@app.route("/api/leave_ride", methods=["POST"])
+def leave_ride():
+    data = request.get_json()
+    username = data.get("username")
+    event_id = data.get("eventID")
+    ride_id = data.get("rideID")
+    
+    if not all([username, event_id, ride_id]):
+        return jsonify({"message": "missing_parameters"})
+    
+   
+    
+    rides_doc = ridesDB.find_one({"eventID": int(event_id)})
+    
+    if not rides_doc:
+        return jsonify({"message": "no_rides"})
+    
+    ride_offers = rides_doc.get("offers", [])
+    
+    for i, offer in enumerate(ride_offers):
+        if offer.get("id") == ride_id:
+            if username not in offer.get("passengers", []):
+                return jsonify({"message": "not_in_ride"})
+            
+            
+            passengers = offer.get("passengers", [])
+            passengers.remove(username)
+            
+            ride_offers[i]["passengers"] = passengers
+            ride_offers[i]["takenSeats"] = len(passengers)
+            
+            ridesDB.update_one(
+                {"eventID": int(event_id)},
+                {"$set": {"offers": ride_offers}}
+            )
+            
+            return jsonify({
+                "message": "success",
+                "rideOffer": ride_offers[i]
+            })
+    
+    return jsonify({"message": "ride_not_found"})
+
+@app.route("/api/get_rides", methods=["GET"])
+def get_rides():
+    event_id = request.args.get("eventID")
+    
+    if not event_id:
+        return jsonify({"message": "missing_eventID"})
+    
+    rides_doc = ridesDB.find_one({"eventID": int(event_id)})
+    
+    if not rides_doc:
+        return jsonify({
+            "message": "no_rides",
+            "offers": [],
+            "requests": []
+        })
+    
+    return jsonify({
+        "message": "success",
+        "offers": rides_doc.get("offers", []),
+        "requests": rides_doc.get("requests", [])
+    })
+    
+@app.route("/api/update_times", methods=["POST"])
+def update_times():
+    data = request.get_json()
+    username = data.get("username")
+    event_id = data.get("eventID")
+    available_times = data.get("availableTimes")  
+    
+    
+    if not all([username, event_id, available_times]):
+        return jsonify({"message": "missing_parameters"})
+    
+    
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    
+    
+    if username not in event.get("members", []) and username != event.get("host"):
+        return jsonify({"message": "not_authorized"})
+    
+    
+    times_doc = timesDB.find_one({"eventID": int(event_id)})
+    
+    if times_doc:
+        
+        times = times_doc.get("times", {})
+        times[username] = available_times
+        
+        timesDB.update_one(
+            {"eventID": int(event_id)},
+            {"$set": {"times": times}}
+        )
+    else:
+        
+        timesDB.insert_one({
+            "eventID": int(event_id),
+            "times": {username: available_times}
+        })
+    
+    
+    all_slots = []
+    times = timesDB.find_one({"eventID": int(event_id)}).get("times", {})
+    
+    for user, slots in times.items():
+        all_slots.extend(slots)
+    
+    
+    slot_counts = {}
+    for slot in all_slots:
+        if slot in slot_counts:
+            slot_counts[slot] += 1
+        else:
+            slot_counts[slot] = 1
+    
+    if slot_counts:
+        max_count = max(slot_counts.values())
+        best_slots = [slot for slot, count in slot_counts.items() if count == max_count]
+    else:
+        best_slots = []
+    
+    return jsonify({
+        "message": "success",
+        "bestTimeSlots": best_slots,
+        "allTimeSlots": slot_counts,
+        "totalParticipants": len(times)
+    })
+
+@app.route("/api/get_best_times", methods=["GET"])
+def get_best_times():
+    event_id = request.args.get("eventID")
+    
+    if not event_id:
+        return jsonify({"message": "missing_eventID"})
+    
+    
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    
+    
+    times_doc = timesDB.find_one({"eventID": int(event_id)})
+    
+    if not times_doc or not times_doc.get("times"):
+        return jsonify({
+            "message": "no_availability_data",
+            "bestTimeSlots": [],
+            "allTimeSlots": {},
+            "totalParticipants": 0
+        })
+    
+    
+    all_slots = []
+    times = times_doc.get("times", {})
+    
+    for user, slots in times.items():
+        all_slots.extend(slots)
+    
+    slot_counts = {}
+    for slot in all_slots:
+        if slot in slot_counts:
+            slot_counts[slot] += 1
+        else:
+            slot_counts[slot] = 1
+    
+    
+    if slot_counts:
+        max_count = max(slot_counts.values())
+        best_slots = [slot for slot, count in slot_counts.items() if count == max_count]
+    else:
+        best_slots = []
+    
+    return jsonify({
+        "message": "success",
+        "bestTimeSlots": best_slots,
+        "allTimeSlots": slot_counts,
+        "totalParticipants": len(times)
+    })
+
+
+@app.route("/api/get_events", methods=["GET"])
+def get_events():
+    try:
+        username = request.args.get("username")
+        if not username:
+            return jsonify({"message": "missing_username"})
+        
+        
+        hosting_events = list(eventsDB.find({"host": username}))
+        
+        
+        member_events = list(eventsDB.find({"members": username}))
+        
+        
+        for event in hosting_events + member_events:
+            event["_id"] = str(event["_id"])
+        
+        return jsonify({
+            "message": "success",
+            "hosting": hosting_events,
+            "member": member_events
+        })
+    except Exception as e:
+        print(e)
+
+
+    
+
+@app.route("/api/add_post", methods=["POST"])
+def add_post():
+    data = request.get_json()
+    username = data.get("username")
+    event_id = data.get("eventID")
+    content = data.get("content")
+    
+    if not all([username, event_id, content]):
+        return jsonify({"message": "missing_parameters"})
+    
+    
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    
+    
+    if username not in event.get("members", []) and username != event.get("host"):
+        return jsonify({"message": "not_authorized"})
+    
+    
+    post = {
+        "id": str(datetime.now().timestamp()),
+        "username": username,
+        "content": content,
+        "timestamp": datetime.now().isoformat(),
+        "likes": []
+    }
+    
+    eventsDB.update_one(
+        {"eventID": int(event_id)},
+        {"$push": {"posts": post}}
+    )
+    
+    return jsonify({
+        "message": "success",
+        "post": post
+    })
+
+
+@app.route("/api/get_posts", methods=["GET"])
+def get_posts():
+    event_id = request.args.get("eventID")
+    
+    if not event_id:
+        return jsonify({"message": "missing_eventID"})
+    
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    
+    return jsonify({
+        "message": "success",
+        "posts": event.get("posts", [])
+    })
+
+
+@app.route("/api/like_post", methods=["POST"])
+def like_post():
+    data = request.get_json()
+    username = data.get("username")
+    event_id = data.get("eventID")
+    post_id = data.get("postID")
+    
+    if not all([username, event_id, post_id]):
+        return jsonify({"message": "missing_parameters"})
+    if("%" in event_id):
+        event_id = event_id.split("%")[1]
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    
+    
+    posts = event.get("posts", [])
+    for i, post in enumerate(posts):
+        if post.get("id") == post_id:
+            likes = post.get("likes", [])
+            
+            if username in likes:
+                
+                likes.remove(username)
+            else:
+                
+                likes.append(username)
+            
+            posts[i]["likes"] = likes
+            
+            eventsDB.update_one(
+                {"eventID": int(event_id)},
+                {"$set": {"posts": posts}}
+            )
+            
+            return jsonify({
+                "message": "success",
+                "liked": username in likes,
+                "likes": len(likes)
+            })
+    
+    return jsonify({"message": "post_not_found"})
+
+
+@app.route("/api/vote_location", methods=["POST"])
+def vote_location():
+    data = request.get_json()
+    username = data.get("username")
+    event_id = data.get("eventID")
+    location = data.get("location")
+    
+    if not all([username, event_id, location]):
+        return jsonify({"message": "missing_parameters"})
+    
+    
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    
+    
+    if username not in event.get("members", []) and username != event.get("host"):
+        return jsonify({"message": "not_authorized"})
+    
+    
+    if not hasattr(app, 'locationsDB'):
+        locations = mongoClient["Events"]["Locations"]
+        app.locationsDB = locations
+    else:
+        locations = app.locationsDB
+    
+    location_doc = locations.find_one({"eventID": int(event_id)})
+    
+    if location_doc:
+        location_votes = location_doc.get("locations", {})
+        if location in location_votes:
+            if username in location_votes[location]:
+                
+                location_votes[location].remove(username)
+                if not location_votes[location]:
+                    del location_votes[location]
+            else:
+                
+                location_votes[location].append(username)
+        else:
+            location_votes[location] = [username]
+        
+        locations.update_one(
+            {"eventID": int(event_id)},
+            {"$set": {"locations": location_votes}}
+        )
+    else:
+        locations.insert_one({
+            "eventID": int(event_id),
+            "locations": {location: [username]}
+        })
+    
+    return jsonify({
+        "message": "success"
+    })
+
+
+@app.route("/api/get_locations", methods=["GET"])
+def get_locations():
+    event_id = request.args.get("eventID")
+    
+    if not event_id:
+        return jsonify({"message": "missing_eventID"})
+    
+    
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    
+    
+    if not hasattr(app, 'locationsDB'):
+        locations = mongoClient["Events"]["Locations"]
+        app.locationsDB = locations
+    else:
+        locations = app.locationsDB
+    
+    location_doc = locations.find_one({"eventID": int(event_id)})
+    
+    if not location_doc:
+        return jsonify({
+            "message": "no_locations",
+            "locations": {}
+        })
+    #1
+    return jsonify({
+        "message": "success",
+        "locations": location_doc.get("locations", {})
+    })
+
+
+@app.route("/api/generate_event", methods=["POST"])
+def generate_event():
+    data = request.get_json()
+    username = data.get("username")
+    location = data.get("location")
+    time = data.get("time")
+    
+    if not all([username, location, time]):
+        return jsonify({"message": "missing_parameters"})
+    
+    try:
+        
+        city = location.split(',')[0].strip()
+        
+        
+        time_descriptions = {
+            "morning": "Morning (8am-12pm)",
+            "afternoon": "Afternoon (12pm-5pm)",
+            "evening": "Evening (5pm-9pm)",
+            "night": "Night (9pm-late)",
+            "weekend": "This Weekend"
+        }
+        time_description = time_descriptions.get(time, time)
+        
+        
+        prompt = f"""
+        Generate a fun and creative event idea for a friend group in {city} during the {time_description}.
+        Format the response as a JSON object with these fields ONE. IT NEEDS TO BE IN JSON ONLY, NO TEXT BEFORE OR AFTER THE JSON:
+        - title: A catchy title for the event (max 30 characters)
+        - description: A brief description of the activity (max 100 characters)
+        - location: A specific place or type of venue in {city}
+        - time: The time period ({time_description})
+        
+        Make it specific to {city}, and appropriate for the time of day.
+        Only return the JSON object, nothing else GOT IT?.
+        """
+
+        
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful event planning assistant that generates creative hangout ideas for friend groups."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=300,
+            temperature=0.7
+        )
+        
+        
+        import json
+        result_text = response.choices[0].message.content.strip()
+        
+        try:
+            event_data = json.loads(result_text)
+        except json.JSONDecodeError:
+            
+            event_data = {
+                "title": f"Local Hangout in {city}",
+                "description": f"Meet up with friends in {city} during the {time_description}.",
+                "location": city,
+                "time": time_description
+            }
+        
+        return jsonify({
+            "message": "success",
+            "event": event_data
+        })
+        
+    except Exception as e:
+        print(f"Error generating event: {str(e)}")
+        return jsonify({
+            "message": "error",
+            "error": str(e)
+        })
+    
+@app.route("/api/get_event", methods=["GET"])
+def get_event():
+    event_id = request.args.get("eventID")
+    
+    if not event_id:
+        return jsonify({"message": "missing_eventID"})
+    
+    event = eventsDB.find_one({"eventID": int(event_id)})
+    if not event:
+        return jsonify({"message": "invalid_id"})
+    
+    
+    event["_id"] = str(event["_id"])
+    
+    return jsonify({
+        "message": "success",
+        "event": event
+    })
+
+@app.route("/api/upload_picture", methods=["POST"])
+def upload_picture():
+    if 'file' not in request.files:
+        return jsonify({"message": "no_file"})
+    
+    file = request.files['file']
+    event_id = request.form.get('eventID')
+    username = request.form.get('username')
+    
+    if not event_id or not username:
+        return jsonify({"message": "missing_parameters"})
+    
+    if file.filename == '':
+        return jsonify({"message": "no_file_selected"})
+    
+    if file and allowed_file(file.filename):
+        
+        file_bytes = file.read()
+        
+        
+        base64_encoded = base64.b64encode(file_bytes).decode('utf-8')
+        
+        
+        image_id = str(datetime.now().timestamp())
+        
+        
+        image_data = {
+            "id": image_id,
+            "filename": secure_filename(file.filename),
+            "content_type": file.content_type,
+            "base64_data": base64_encoded,
+            "uploaded_at": datetime.now().isoformat()
+        }
+        
+        
+        picture_doc = picturesDB.find_one({"eventID": int(event_id)})
+        if picture_doc:
+            pictures = picture_doc.get("pictures", {})
+            if username in pictures:
+                pictures[username].append(image_id)  
+            else:
+                pictures[username] = [image_id]  
+            
+            
+            picturesDB.update_one(
+                {"eventID": int(event_id)},
+                {"$set": {"pictures": pictures}}
+            )
+            
+            
+            db = mongoClient["Events"]
+            images_collection = db["Images"]
+            images_collection.insert_one(image_data)
+        
+        return jsonify({
+            "message": "success",
+            "image_id": image_id
+        })
+    
+    return jsonify({"message": "invalid_file_type"})
+
+@app.route("/api/get_pictures", methods=["POST"])
+def get_pictures():
+    data = request.get_json()
+    event_id = data.get("eventID")
+    
+    if not event_id:
+        return jsonify({"message": "missing_eventID"})
+    
+    try:
+        picture_doc = picturesDB.find_one({"eventID": int(event_id)})
+        if not picture_doc or not picture_doc.get("pictures"):
+            return jsonify({
+                "message": "no_pictures",
+                "pictures": {}
+            })
+        
+        return jsonify({
+            "message": "success",
+            "pictures": picture_doc.get("pictures")
+        })
+    except Exception as e:
+        print(f"Error in get_pictures: {str(e)}")
+        return jsonify({"message": "server_error", "error": str(e)})
+
+@app.route("/api/get_image/<image_id>", methods=["GET"])
+def get_image(image_id):
+    try:
+        
+        db = mongoClient["Events"]
+        images_collection = db["Images"]
+        image_data = images_collection.find_one({"id": image_id})
+        
+        if not image_data:
+            return jsonify({"message": "image_not_found"}), 404
+        
+        
+        response = make_response(base64.b64decode(image_data.get("base64_data")))
+        response.headers.set('Content-Type', image_data.get("content_type", "image/jpeg"))
+        return response
+    except Exception as e:
+        print(f"Error serving image: {str(e)}")
+        return jsonify({"message": "error", "error": str(e)}), 500
 
 if __name__ == "__main__":
-    
-    mongo.db.projects.create_index([('status', 1)])
-    mongo.db.projects.create_index([('created_by', 1)])
-    mongo.db.projects.create_index([('plant_type', 1)])
-    mongo.db.pictures.create_index([('project_id', 1)])
-    mongo.db.pictures.create_index([('user_id', 1)])
-    mongo.db.pictures.create_index([('is_match', 1)])
-    mongo.db.locations.create_index([('project_id', 1)])
-    mongo.db.messages.create_index([('project_id', 1)])
-    
-    app.run(debug=True, port = 5000)
+    app.run(debug=True, port=8080, host = '0.0.0.0')
