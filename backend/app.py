@@ -12,14 +12,15 @@ import uuid
 import io
 import csv
 import numpy as np
-import tensorflow as tf
 from PIL import Image
 import pandas as pd
-import matplotlib.pyplot as plt
 from geopy.distance import geodesic
 from pymongo.mongo_client import MongoClient
 from pymongo.server_api import ServerApi
 from dotenv import load_dotenv
+import requests
+import os
+from typing import Dict, Any, Optional
 
 load_dotenv()
 app = Flask(__name__)
@@ -35,67 +36,6 @@ os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
 
 mongo = MongoClient(os.getenv("MONGO_URI"), server_api=ServerApi('1'))
-
-
-MODEL_PATH = os.environ.get("MODEL_PATH", "plant_identification_model")
-
-
-try:
-    plant_model = tf.keras.models.load_model(MODEL_PATH)
-    
-    
-    with open(os.path.join(MODEL_PATH, "labels.txt"), "r") as f:
-        plant_labels = [line.strip() for line in f.readlines()]
-    
-    plant_model_loaded = True
-except:
-    
-    plant_model_loaded = False
-    plant_labels = ["daisy", "dandelion", "roses", "sunflowers", "tulips"]  
-
-def identify_plant(image_path):
-    """
-    Identify plant species from an image.
-    
-    Args:
-        image_path: Path to the image file
-        
-    Returns:
-        Dictionary containing species name and confidence score
-    """
-    try:
-        if plant_model_loaded:
-            
-            img = tf.keras.preprocessing.image.load_img(image_path, target_size=(224, 224))
-            img_array = tf.keras.preprocessing.image.img_to_array(img)
-            img_array = np.expand_dims(img_array, axis=0)
-            img_array = tf.keras.applications.mobilenet_v2.preprocess_input(img_array)
-            
-            
-            predictions = plant_model.predict(img_array)
-            predicted_class = np.argmax(predictions[0])
-            confidence = float(predictions[0][predicted_class])
-            
-            return {
-                "species": plant_labels[predicted_class],
-                "confidence": confidence
-            }
-        else:
-            
-            
-            from random import choice, random
-            species = choice(plant_labels)
-            return {
-                "species": species,
-                "confidence": 0.7 + (random() * 0.3)  
-            }
-    except Exception as e:
-        print(f"Error in plant identification: {e}")
-        return {
-            "species": "unknown",
-            "confidence": 0.0,
-            "error": str(e)
-        }
 
 
 def token_required(f):
@@ -1514,6 +1454,96 @@ def simplified_project_visualization():
     
     except:
         return jsonify({'success': False, 'message': 'Invalid project ID!'}), 400
+    
+
+def identify_plant(image_path: str) -> Dict[str, Any]:
+    """
+    Identify plant species from an image using the Pl@ntNet API.
+    Gets API key from .env file.
+    
+    Args:
+        image_path (str): Path to the image file
+        
+    Returns:
+        Dict[str, Any]: Dictionary containing species information and confidence scores
+    """
+    # Load environment variables from .env file
+    load_dotenv()
+    
+    # Get API key from environment variable
+    api_key = os.environ.get("PLANTNET_API_KEY")
+    if not api_key:
+        return {
+            "error": "API key not found. Make sure PLANTNET_API_KEY is set in your .env file.",
+            "species": "unknown",
+            "confidence": 0.0
+        }
+    
+    try:
+        # Verify file exists and is readable
+        if not os.path.isfile(image_path):
+            return {
+                "error": f"File not found: {image_path}",
+                "species": "unknown",
+                "confidence": 0.0
+            }
+        
+        # Pl@ntNet API endpoint
+        url = "https://my-api.plantnet.org/v2/identify/all"
+        
+        # API parameters
+        params = {
+            "api-key": api_key,
+            "include-related-images": "false",
+        }
+        
+        # Open image file
+        with open(image_path, "rb") as image_file:
+            files = {
+                "images": (os.path.basename(image_path), image_file, "image/jpeg")
+            }
+            
+            # Make the API request
+            response = requests.post(url, params=params, files=files)
+            
+            # Check if request was successful
+            if response.status_code == 200:
+                data = response.json()
+                
+                # If we have results
+                if "results" in data and len(data["results"]) > 0:
+                    # Get the top result
+                    top_result = data["results"][0]
+                    scientific_name = top_result["species"]["scientificNameWithoutAuthor"]
+                    common_names = top_result["species"].get("commonNames", [])
+                    common_name = common_names[0] if common_names else "No common name available"
+                    confidence = top_result["score"]
+                    
+                    return {
+                        "species": scientific_name,
+                        "common_name": common_name,
+                        "confidence": confidence,
+                        "all_results": data["results"]  # Include all results for reference
+                    }
+                else:
+                    return {
+                        "species": "unknown",
+                        "confidence": 0.0,
+                        "error": "No identification results returned"
+                    }
+            else:
+                return {
+                    "species": "unknown",
+                    "confidence": 0.0,
+                    "error": f"API error: {response.status_code} - {response.text}"
+                }
+                
+    except Exception as e:
+        return {
+            "species": "unknown",
+            "confidence": 0.0,
+            "error": f"Error in plant identification: {str(e)}"
+        }
     
 
 if __name__ == "__main__":
