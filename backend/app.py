@@ -10,16 +10,19 @@ import base64
 import uuid
 import json
 import stripe
+from openai import OpenAI
 import random
 import requests
 from bson.objectid import ObjectId
 
-stripe.api_key = os.getenv("STRIPE_API_KEY")
-
-PLANTNET_API_KEY = os.getenv("PLANTNET_API_KEY")
 PLANTNET_API_URL = "https://my-api.plantnet.org/v2/identify/all"
 
 load_dotenv()
+
+
+stripe.api_key = os.getenv("STRIPE_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+PLANTNET_API_KEY = os.getenv("PLANTNET_API_KEY")
 MONGO_URI_STRING = os.getenv("MONGO_URI_STRING")
 
 app = Flask(__name__)
@@ -71,8 +74,47 @@ def identify_plant(image_base64):
         print(f"Plant identification error: {e}")
         return None
 
+@app.route("/api/ask_chatgpt", methods=["POST"])
+def ask_chatgpt():
+    data = request.get_json()
+    prompt = data.get("prompt")
+    system_message = data.get("system_message", "You are a helpful assistant.")
+    model = data.get("model", "gpt-3.5-turbo")
+    temperature = data.get("temperature", 0.7)
+    max_tokens = data.get("max_tokens", 500)
     
-
+    if not prompt:
+        return jsonify({"message": "error", "error": "Missing prompt parameter"})
+    
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": "Based on the following flower, generate 3-5 ways you can differentiate it from other plants. An example would be bright colors, oddly shaped petals, etc. Ensure you give pointers to differentiate it from similar species and label specific things. Here's the plant: " +prompt}
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
+        
+        result_text = response.choices[0].message.content.strip()
+        
+        return jsonify({
+            "message": "success",
+            "response": result_text,
+            "usage": {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens
+            }
+        })
+        
+    except Exception as e:
+        print(f"Error calling ChatGPT API: {str(e)}")
+        return jsonify({
+            "message": "error",
+            "error": str(e)
+        }), 500
 
 @app.route("/api/create_payment_intent", methods=["POST"])
 def create_payment_intent():

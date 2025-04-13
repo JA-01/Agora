@@ -15,6 +15,7 @@ import {
   UserCircleIcon,
   BeakerIcon,
   ClockIcon,
+  ChatBubbleBottomCenterIcon,
   DocumentTextIcon,
 } from '@heroicons/react/24/outline';
 
@@ -272,11 +273,23 @@ export default function Dashboard() {
             className="bg-white p-6 rounded-2xl border border-[#8FB339] shadow-md hover:border-[#B7CE63] hover:shadow-lg transition-all duration-300 ease-in-out transform hover:-translate-y-1 flex flex-col items-start"
           >
             <div className="p-3 bg-[#C7D59F] rounded-full mb-4 border border-[#B7CE63]">
-              <TrophyIcon className="w-8 h-8 text-[#4B5842]" />
+              <CurrencyDollarIcon className="w-8 h-8 text-[#4B5842]" />
             </div>
             <h3 className="text-xl font-bold text-[#4B5842] mb-2">Cashout</h3>
             <p className="text-[#4B5842]">
               Get Paid!
+            </p>
+          </Link>
+          <Link 
+            href="/chatbot"
+            className="bg-white p-6 rounded-2xl border border-[#8FB339] shadow-md hover:border-[#B7CE63] hover:shadow-lg transition-all duration-300 ease-in-out transform hover:-translate-y-1 flex flex-col items-start"
+          >
+            <div className="p-3 bg-[#C7D59F] rounded-full mb-4 border border-[#B7CE63]">
+              <ChatBubbleBottomCenterIcon className="w-8 h-8 text-[#4B5842]" />
+            </div>
+            <h3 className="text-xl font-bold text-[#4B5842] mb-2">ChatBot</h3>
+            <p className="text-[#4B5842]">
+              Learn more about plants.
             </p>
           </Link>
 

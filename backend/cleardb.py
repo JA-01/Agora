@@ -34,4 +34,4 @@ userProfilesDB = db["UserProfiles"]
 bountiesDB = mongoClient["Bounties"]["BountyData"]
 submissionsDB = db["Submissions"]
 
-submissionsDB.drop()
+bountiesDB.drop()
