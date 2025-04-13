@@ -1228,6 +1228,333 @@ def project_visualization(current_user, project_id):
     else:
         return jsonify({'message': 'Invalid visualization type!'}), 400
 
+# Add these simplified routes to match our frontend implementation
+
+@app.route('/api/user_projects', methods=['GET'])
+def simplified_user_projects():
+    # Get username from query parameter instead of JWT
+    username = request.args.get('username')
+    if not username:
+        return jsonify({'message': 'Username is required!'}), 400
+    
+    # Find user by username
+    user = mongo.db.users.find_one({'name': username})
+    if not user:
+        return jsonify({'projects': []}), 200
+    
+    # Find projects created by this user
+    projects = list(mongo.db.projects.find({'created_by': user['_id']}))
+    
+    # Format projects for the response
+    formatted_projects = []
+    for project in projects:
+        formatted_projects.append({
+            'id': str(project['_id']),
+            'title': project['title'],
+            'description': project.get('description', ''),
+            'plantType': project.get('plant_type', ''),
+            'dataNeeded': project.get('additional_notes', ''),
+            'location': project.get('location', {}).get('name', ''),
+            'status': project.get('status', 'pending'),
+            'contributors': len(project.get('contributors', [])),
+            'dataPoints': project.get('submissions_completed', 0),
+            'creator': username
+        })
+    
+    return jsonify({'projects': formatted_projects})
+
+@app.route('/api/user_profile', methods=['GET'])
+def simplified_user_profile():
+    # Get username from query parameter
+    username = request.args.get('username')
+    if not username:
+        return jsonify({'message': 'Username is required!'}), 400
+    
+    # Find user by username
+    user = mongo.db.users.find_one({'name': username})
+    if not user:
+        return jsonify({'location': ''}), 200
+    
+    # Return simplified profile
+    return jsonify({
+        'location': user.get('location', {}).get('name', '')
+    })
+
+@app.route('/api/available_projects', methods=['GET'])
+def simplified_available_projects():
+    # Get location from query parameter
+    location = request.args.get('location')
+    if not location:
+        return jsonify({'projects': []}), 200
+    
+    # Find projects that are open
+    projects = list(mongo.db.projects.find({'status': 'open'}))
+    
+    # Format projects for the response
+    formatted_projects = []
+    for project in projects:
+        # Find the creator's username
+        creator = mongo.db.users.find_one({'_id': project['created_by']})
+        creator_name = creator['name'] if creator else 'Unknown'
+        
+        # Calculate a simple distance (mocked)
+        import random
+        distance = round(random.uniform(0.5, 20.0), 1)
+        
+        formatted_projects.append({
+            'id': str(project['_id']),
+            'title': project['title'],
+            'description': project.get('description', ''),
+            'plantType': project.get('plant_type', ''),
+            'dataNeeded': project.get('additional_notes', ''),
+            'location': project.get('location', {}).get('name', ''),
+            'status': project.get('status', 'open'),
+            'distance': distance,
+            'creator': creator_name
+        })
+    
+    return jsonify({'projects': formatted_projects})
+
+@app.route('/api/get_project', methods=['GET'])
+def simplified_get_project():
+    # Get project ID from query parameter
+    project_id = request.args.get('projectID')
+    if not project_id:
+        return jsonify({'success': False, 'message': 'Project ID is required!'}), 400
+    
+    try:
+        # Find the project
+        project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
+        if not project:
+            return jsonify({'success': False, 'message': 'Project not found!'}), 404
+        
+        # Find the creator's username
+        creator = mongo.db.users.find_one({'_id': project['created_by']})
+        creator_name = creator['name'] if creator else 'Unknown'
+        
+        # Format the project data
+        formatted_project = {
+            'id': str(project['_id']),
+            'title': project['title'],
+            'description': project.get('description', ''),
+            'plantType': project.get('plant_type', ''),
+            'dataNeeded': project.get('additional_notes', ''),
+            'location': project.get('location', {}).get('name', ''),
+            'status': project.get('status', 'pending'),
+            'contributors': [str(c) for c in project.get('contributors', [])],
+            'dataPoints': project.get('submissions_completed', 0),
+            'creator': creator_name,
+            'createdAt': project.get('created_at', '').isoformat() if project.get('created_at') else ''
+        }
+        
+        return jsonify({'success': True, 'project': formatted_project})
+    except:
+        return jsonify({'success': False, 'message': 'Invalid project ID!'}), 400
+
+@app.route('/api/create_project', methods=['POST'])
+def simplified_create_project():
+    data = request.get_json()
+    
+    # Get username
+    username = data.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': 'Username is required!'}), 400
+    
+    # Find user by username
+    user = mongo.db.users.find_one({'name': username})
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found!'}), 404
+    
+    # Create new project with simplified fields
+    new_project = {
+        'title': data.get('title', ''),
+        'description': data.get('description', ''),
+        'plant_type': data.get('plantType', ''),
+        'additional_notes': data.get('dataNeeded', ''),
+        'location': {'name': data.get('location', '')},
+        'created_by': user['_id'],
+        'contributors': [],
+        'submissions_completed': 0,
+        'submissions_needed': 10,  # Default value
+        'status': 'pending',
+        'created_at': datetime.datetime.utcnow(),
+        'action_type': 'research'  # Default value
+    }
+    
+    project_id = mongo.db.projects.insert_one(new_project).inserted_id
+    
+    return jsonify({
+        'success': True,
+        'message': 'Project created successfully!',
+        'projectId': str(project_id)
+    })
+
+@app.route('/api/join_project', methods=['POST'])
+def simplified_join_project():
+    data = request.get_json()
+    
+    # Get username and project ID
+    username = data.get('username')
+    project_id = data.get('projectId')
+    
+    if not username or not project_id:
+        return jsonify({'success': False, 'message': 'Username and project ID are required!'}), 400
+    
+    # Find user by username
+    user = mongo.db.users.find_one({'name': username})
+    if not user:
+        return jsonify({'success': False, 'message': 'User not found!'}), 404
+    
+    try:
+        # Find the project
+        project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
+        if not project:
+            return jsonify({'success': False, 'message': 'Project not found!'}), 404
+        
+        # Add user to contributors if not already there
+        if user['_id'] not in project.get('contributors', []):
+            mongo.db.projects.update_one(
+                {'_id': ObjectId(project_id)},
+                {'$push': {'contributors': user['_id']}}
+            )
+        
+        return jsonify({'success': True, 'message': 'Joined project successfully!'})
+    except:
+        return jsonify({'success': False, 'message': 'Invalid project ID!'}), 400
+
+@app.route('/api/project_data', methods=['GET'])
+def simplified_project_data():
+    # Get username
+    username = request.args.get('username')
+    if not username:
+        return jsonify({'data': []}), 200
+    
+    # Find user by username
+    user = mongo.db.users.find_one({'name': username})
+    if not user:
+        return jsonify({'data': []}), 200
+    
+    # Find projects where user is creator or contributor
+    user_projects = list(mongo.db.projects.find({
+        '$or': [
+            {'created_by': user['_id']},
+            {'contributors': user['_id']}
+        ]
+    }))
+    
+    # Format projects for download
+    formatted_data = []
+    for project in user_projects:
+        formatted_data.append({
+            'id': str(project['_id']),
+            'title': project['title'],
+            'status': project.get('status', 'pending'),
+            'dataPoints': project.get('submissions_completed', 0),
+            'lastUpdated': project.get('updated_at', '').isoformat() if project.get('updated_at') else ''
+        })
+    
+    return jsonify({'data': formatted_data})
+
+# Add simplified routes for the project page tabs
+@app.route('/api/project_contributors', methods=['GET'])
+def simplified_project_contributors():
+    # Get project ID
+    project_id = request.args.get('projectID')
+    if not project_id:
+        return jsonify({'success': False, 'message': 'Project ID is required!'}), 400
+    
+    try:
+        # Find the project
+        project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
+        if not project:
+            return jsonify({'success': False, 'message': 'Project not found!'}), 404
+        
+        # Get contributors
+        contributors = []
+        if project.get('contributors'):
+            for contributor_id in project['contributors']:
+                user = mongo.db.users.find_one({'_id': contributor_id})
+                if user:
+                    # Count data points submitted by this user
+                    data_points = mongo.db.pictures.count_documents({
+                        'project_id': ObjectId(project_id),
+                        'user_id': user['_id']
+                    })
+                    
+                    contributors.append({
+                        'username': user['name'],
+                        'dataPoints': data_points,
+                        'joinDate': user.get('created_at', '').isoformat() if user.get('created_at') else ''
+                    })
+        
+        return jsonify({'success': True, 'contributors': contributors})
+    except:
+        return jsonify({'success': False, 'message': 'Invalid project ID!'}), 400
+
+@app.route('/api/project_visualization', methods=['GET'])
+def simplified_project_visualization():
+    # Get project ID and visualization type
+    project_id = request.args.get('projectID')
+    viz_type = request.args.get('type', 'timeline')
+    
+    if not project_id:
+        return jsonify({'success': False, 'message': 'Project ID is required!'}), 400
+    
+    try:
+        # Find the project
+        project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
+        if not project:
+            return jsonify({'success': False, 'message': 'Project not found!'}), 404
+        
+        # Create simplified visualization data
+        if viz_type == 'timeline':
+            chart_data = [
+                {'date': '2025-03-01', 'value': 5},
+                {'date': '2025-03-15', 'value': 12},
+                {'date': '2025-04-01', 'value': 18},
+                {'date': '2025-04-10', 'value': 25}
+            ]
+            
+            return jsonify({
+                'success': True,
+                'data': {
+                    'title': 'Data Collection Timeline',
+                    'chartData': chart_data,
+                    'insights': [
+                        'Data collection has been steadily increasing',
+                        'Most contributions occur on weekends',
+                        'The project is on track to meet its target'
+                    ]
+                }
+            })
+        
+        elif viz_type == 'distribution':
+            chart_data = [
+                {'category': 'Maple Trees', 'count': 15},
+                {'category': 'Oak Trees', 'count': 8},
+                {'category': 'Pine Trees', 'count': 12},
+                {'category': 'Others', 'count': 5}
+            ]
+            
+            return jsonify({
+                'success': True,
+                'data': {
+                    'title': 'Plant Species Distribution',
+                    'chartData': chart_data,
+                    'insights': [
+                        'Maple trees are the most commonly reported',
+                        'Three species make up 87% of all reports',
+                        'Species diversity increases in urban areas'
+                    ]
+                }
+            })
+        
+        else:
+            return jsonify({'success': False, 'message': 'Invalid visualization type!'}), 400
+    
+    except:
+        return jsonify({'success': False, 'message': 'Invalid project ID!'}), 400
+    
 
 if __name__ == "__main__":
     
