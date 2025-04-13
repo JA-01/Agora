@@ -1,3 +1,774 @@
+from flask import Flask, request, jsonify, send_file
+from flask_pymongo import PyMongo
+from bson.objectid import ObjectId
+from werkzeug.security import generate_password_hash, check_password_hash
+from functools import wraps
+import jwt
+import datetime
+import os
+from flask_cors import CORS
+from bson.json_util import dumps
+import uuid
+import io
+import csv
+import numpy as np
+import tensorflow as tf
+from PIL import Image
+import pandas as pd
+import matplotlib.pyplot as plt
+from geopy.distance import geodesic
+
+app = Flask(__name__)
+CORS(app)
+
+# Configuration
+app.config["MONGO_URI"] = os.environ.get("MONGO_URI", "mongodb://localhost:27017/plant_bounty")
+app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "your-secret-key-for-jwt")
+app.config["UPLOAD_FOLDER"] = os.environ.get("UPLOAD_FOLDER", "/tmp/plant_uploads")
+
+# Ensure upload directory exists
+os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+
+# MongoDB setup
+mongo = PyMongo(app)
+
+# Plant identification model setup
+MODEL_PATH = os.environ.get("MODEL_PATH", "plant_identification_model")
+
+# Load plant identification model
+try:
+    plant_model = tf.keras.models.load_model(MODEL_PATH)
+    
+    # Load plant labels
+    with open(os.path.join(MODEL_PATH, "labels.txt"), "r") as f:
+        plant_labels = [line.strip() for line in f.readlines()]
+    
+    plant_model_loaded = True
+except:
+    # If model loading fails, use a fallback approach
+    plant_model_loaded = False
+    plant_labels = ["daisy", "dandelion", "roses", "sunflowers", "tulips"]  # Example labels
+
+def identify_plant(image_path):
+    """
+    Identify plant species from an image.
+    
+    Args:
+        image_path: Path to the image file
+        
+    Returns:
+        Dictionary containing species name and confidence score
+    """
+    try:
+        if plant_model_loaded:
+            # Preprocess image for the model
+            img = tf.keras.preprocessing.image.load_img(image_path, target_size=(224, 224))
+            img_array = tf.keras.preprocessing.image.img_to_array(img)
+            img_array = np.expand_dims(img_array, axis=0)
+            img_array = tf.keras.applications.mobilenet_v2.preprocess_input(img_array)
+            
+            # Get predictions
+            predictions = plant_model.predict(img_array)
+            predicted_class = np.argmax(predictions[0])
+            confidence = float(predictions[0][predicted_class])
+            
+            return {
+                "species": plant_labels[predicted_class],
+                "confidence": confidence
+            }
+        else:
+            # Fallback to a simulated identification (for demo purposes)
+            # In production, you'd use a proper identification service or API
+            from random import choice, random
+            species = choice(plant_labels)
+            return {
+                "species": species,
+                "confidence": 0.7 + (random() * 0.3)  # Random confidence between 0.7 and 1.0
+            }
+    except Exception as e:
+        print(f"Error in plant identification: {e}")
+        return {
+            "species": "unknown",
+            "confidence": 0.0,
+            "error": str(e)
+        }
+
+# Authentication decorator
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = None
+        
+        if 'Authorization' in request.headers:
+            auth_header = request.headers['Authorization']
+            if auth_header.startswith('Bearer '):
+                token = auth_header.split(' ')[1]
+        
+        if not token:
+            return jsonify({'message': 'Token is missing!'}), 401
+        
+        try:
+            data = jwt.decode(token, app.config['SECRET_KEY'], algorithms=["HS256"])
+            current_user = mongo.db.users.find_one({'_id': ObjectId(data['user_id'])})
+            if not current_user:
+                return jsonify({'message': 'Invalid token!'}), 401
+        except:
+            return jsonify({'message': 'Invalid token!'}), 401
+            
+        return f(current_user, *args, **kwargs)
+    
+    return decorated
+
+# Utility functions
+def save_image(image_file):
+    """Save an image file and return its path"""
+    filename = str(uuid.uuid4()) + os.path.splitext(image_file.filename)[1]
+    file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+    image_file.save(file_path)
+    return file_path, filename
+
+def calculate_distance(location1, location2):
+    """Calculate distance between two lat/long locations in km"""
+    try:
+        point1 = (location1['latitude'], location1['longitude'])
+        point2 = (location2['latitude'], location2['longitude'])
+        return geodesic(point1, point2).kilometers
+    except:
+        return float('inf')  # Return infinity if calculation fails
+
+# User Authentication Endpoints
+@app.route('/api/add_user', methods=['POST'])
+def add_user():
+    data = request.get_json()
+    
+    # Check if required fields are present
+    required_fields = ['name', 'email', 'password', 'location']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({'message': f'Missing required field: {field}'}), 400
+    
+    # Check if user already exists
+    if mongo.db.users.find_one({'email': data['email']}):
+        return jsonify({'message': 'User already exists!'}), 400
+    
+    # Create new user
+    new_user = {
+        'name': data['name'],
+        'email': data['email'],
+        'password': generate_password_hash(data['password']),
+        'location': data['location'],
+        'bio': data.get('bio', ''),
+        'expertise': data.get('expertise', []),
+        'is_verified_org': data.get('is_verified_org', False),
+        'profile_picture': data.get('profile_picture', ''),
+        'joined_projects': [],
+        'created_projects': [],
+        'created_at': datetime.datetime.utcnow()
+    }
+    
+    user_id = mongo.db.users.insert_one(new_user).inserted_id
+    
+    return jsonify({'message': 'User registered successfully!', 'user_id': str(user_id)}), 201
+
+@app.route('/api/verify_login', methods=['POST'])
+def verify_login():
+    data = request.get_json()
+    
+    if 'email' not in data or 'password' not in data:
+        return jsonify({'message': 'Email and password are required!'}), 400
+    
+    user = mongo.db.users.find_one({'email': data['email']})
+    
+    if not user or not check_password_hash(user['password'], data['password']):
+        return jsonify({'message': 'Invalid credentials!'}), 401
+    
+    token = jwt.encode({
+        'user_id': str(user['_id']),
+        'exp': datetime.datetime.utcnow() + datetime.timedelta(days=7)
+    }, app.config['SECRET_KEY'], algorithm="HS256")
+    
+    return jsonify({
+        'message': 'Login successful!',
+        'token': token,
+        'user_id': str(user['_id']),
+        'is_verified_org': user.get('is_verified_org', False)
+    })
+
+@app.route('/api/user_profile', methods=['GET'])
+@token_required
+def user_profile(current_user):
+    # Remove password before sending data
+    user_data = {
+        'id': str(current_user['_id']),
+        'name': current_user['name'],
+        'email': current_user['email'],
+        'location': current_user.get('location', {}),
+        'bio': current_user.get('bio', ''),
+        'expertise': current_user.get('expertise', []),
+        'is_verified_org': current_user.get('is_verified_org', False),
+        'profile_picture': current_user.get('profile_picture', ''),
+        'joined_projects': current_user.get('joined_projects', []),
+        'created_projects': current_user.get('created_projects', []),
+        'created_at': current_user['created_at']
+    }
+    
+    return jsonify(user_data)
+
+@app.route('/api/update_profile', methods=['PUT'])
+@token_required
+def update_profile(current_user):
+    data = request.get_json()
+    
+    # Fields that can be updated
+    update_data = {}
+    allowed_fields = ['name', 'location', 'bio', 'expertise', 'profile_picture']
+    for field in allowed_fields:
+        if field in data:
+            update_data[field] = data[field]
+        
+    # Update user
+    if update_data:
+        mongo.db.users.update_one(
+            {'_id': current_user['_id']},
+            {'$set': update_data}
+        )
+        
+    return jsonify({'message': 'Profile updated successfully!'})
+
+# Project Management Endpoints
+@app.route('/api/create_project', methods=['POST'])
+@token_required
+def create_project(current_user):
+    data = request.get_json()
+    
+    # Validate project data
+    required_fields = ['title', 'description', 'plant_type', 'timeframe', 'payment', 'submissions_needed', 'action_type', 'location']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({'message': f'Missing required field: {field}'}), 400
+    
+    # Check if action type is valid
+    valid_actions = ['research', 'removal']
+    if data['action_type'] not in valid_actions:
+        return jsonify({'message': f'Invalid action type. Must be one of: {valid_actions}'}), 400
+        
+    # Check if removal action is requested by a verified organization
+    if data['action_type'] == 'removal' and not current_user.get('is_verified_org', False):
+        return jsonify({'message': 'Only verified organizations can create removal projects'}), 403
+    
+    # Create new project
+    new_project = {
+        'title': data['title'],
+        'description': data['description'],
+        'plant_type': data['plant_type'],
+        'timeframe': {
+            'start': datetime.datetime.fromisoformat(data['timeframe']['start']),
+            'end': datetime.datetime.fromisoformat(data['timeframe']['end'])
+        },
+        'payment': float(data['payment']),
+        'submissions_needed': int(data['submissions_needed']),
+        'submissions_completed': 0,
+        'action_type': data['action_type'],
+        'location': data['location'],
+        'additional_notes': data.get('additional_notes', ''),
+        'created_by': current_user['_id'],
+        'contributors': [],
+        'invited_users': [],
+        'collection_sites': [],
+        'status': 'open',
+        'created_at': datetime.datetime.utcnow(),
+        'updated_at': datetime.datetime.utcnow()
+    }
+    
+    project_id = mongo.db.projects.insert_one(new_project).inserted_id
+    
+    # Update user's created projects
+    mongo.db.users.update_one(
+        {'_id': current_user['_id']},
+        {'$push': {'created_projects': project_id}}
+    )
+    
+    return jsonify({
+        'message': 'Project created successfully!',
+        'project_id': str(project_id)
+    }), 201
+
+@app.route('/api/update_project/<project_id>', methods=['PUT'])
+@token_required
+def update_project(current_user, project_id):
+    data = request.get_json()
+    
+    # Get project
+    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
+    
+    if not project:
+        return jsonify({'message': 'Project not found!'}), 404
+    
+    # Check if user is the project creator
+    if str(project['created_by']) != str(current_user['_id']):
+        return jsonify({'message': 'Unauthorized!'}), 403
+    
+    # Fields that can be updated
+    update_data = {}
+    allowed_fields = ['title', 'description', 'additional_notes', 'location', 'timeframe', 'payment', 'submissions_needed']
+    for field in allowed_fields:
+        if field in data:
+            update_data[field] = data[field]
+    
+    # Special handling for timeframe
+    if 'timeframe' in update_data:
+        update_data['timeframe'] = {
+            'start': datetime.datetime.fromisoformat(data['timeframe']['start']),
+            'end': datetime.datetime.fromisoformat(data['timeframe']['end'])
+        }
+    
+    # Update project
+    if update_data:
+        update_data['updated_at'] = datetime.datetime.utcnow()
+        mongo.db.projects.update_one(
+            {'_id': ObjectId(project_id)},
+            {'$set': update_data}
+        )
+        
+    return jsonify({'message': 'Project updated successfully!'})
+
+@app.route('/api/get_project/<project_id>', methods=['GET'])
+@token_required
+def get_project(current_user, project_id):
+    # Get project
+    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
+    
+    if not project:
+        return jsonify({'message': 'Project not found!'}), 404
+    
+    # Convert ObjectId to string
+    project['_id'] = str(project['_id'])
+    project['created_by'] = str(project['created_by'])
+    
+    # Convert ObjectIds in arrays
+    if 'contributors' in project:
+        project['contributors'] = [str(user_id) for user_id in project['contributors']]
+    if 'invited_users' in project:
+        project['invited_users'] = [str(user_id) for user_id in project['invited_users']]
+    
+    return jsonify(project)
+
+@app.route('/api/user_projects', methods=['GET'])
+@token_required
+def user_projects(current_user):
+    # Get projects created by the current user
+    projects = list(mongo.db.projects.find({'created_by': current_user['_id']}))
+    
+    # Convert ObjectId to string
+    for project in projects:
+        project['_id'] = str(project['_id'])
+        project['created_by'] = str(project['created_by'])
+        
+        # Convert ObjectIds in arrays
+        if 'contributors' in project:
+            project['contributors'] = [str(user_id) for user_id in project['contributors']]
+        if 'invited_users' in project:
+            project['invited_users'] = [str(user_id) for user_id in project['invited_users']]
+    
+    return jsonify(projects)
+
+@app.route('/api/available_projects', methods=['GET'])
+@token_required
+def available_projects(current_user):
+    # Get user's location
+    user_location = current_user.get('location', {})
+    
+    # Get query parameters
+    max_distance = float(request.args.get('max_distance', 50))  # km
+    action_type = request.args.get('action_type')
+    plant_type = request.args.get('plant_type')
+    status = request.args.get('status', 'open')
+    
+    # Build query
+    query = {'status': status}
+    
+    # Filter by action type if provided
+    if action_type:
+        query['action_type'] = action_type
+        
+    # Filter by plant type if provided
+    if plant_type:
+        query['plant_type'] = plant_type
+    
+    # Get projects
+    projects = list(mongo.db.projects.find(query))
+    
+    # Filter by distance if user location is available
+    filtered_projects = []
+    if user_location and 'latitude' in user_location and 'longitude' in user_location:
+        for project in projects:
+            project_location = project.get('location', {})
+            if 'latitude' in project_location and 'longitude' in project_location:
+                distance = calculate_distance(user_location, project_location)
+                if distance <= max_distance:
+                    project['distance'] = round(distance, 2)  # Round to 2 decimal places
+                    filtered_projects.append(project)
+            else:
+                # Include projects without location data
+                project['distance'] = None
+                filtered_projects.append(project)
+    else:
+        # If user location is not available, include all projects
+        filtered_projects = projects
+    
+    # Convert ObjectId to string
+    for project in filtered_projects:
+        project['_id'] = str(project['_id'])
+        project['created_by'] = str(project['created_by'])
+        
+        # Convert ObjectIds in arrays
+        if 'contributors' in project:
+            project['contributors'] = [str(user_id) for user_id in project['contributors']]
+        if 'invited_users' in project:
+            project['invited_users'] = [str(user_id) for user_id in project['invited_users']]
+    
+    # Sort by distance if available
+    filtered_projects.sort(key=lambda x: x.get('distance', float('inf')))
+    
+    return jsonify(filtered_projects)
+
+# Collaboration Endpoints
+@app.route('/api/join_project/<project_id>', methods=['POST'])
+@token_required
+def join_project(current_user, project_id):
+    # Get project
+    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
+    
+    if not project:
+        return jsonify({'message': 'Project not found!'}), 404
+    
+    # Check if project is still open
+    if project['status'] != 'open':
+        return jsonify({'message': 'Project is not open for contributions!'}), 400
+    
+    # Check if user is already a contributor
+    if current_user['_id'] in project.get('contributors', []):
+        return jsonify({'message': 'You are already a contributor to this project!'}), 400
+    
+    # Add user to project contributors
+    mongo.db.projects.update_one(
+        {'_id': ObjectId(project_id)},
+        {'$push': {'contributors': current_user['_id']}}
+    )
+    
+    # Add project to user's joined projects
+    mongo.db.users.update_one(
+        {'_id': current_user['_id']},
+        {'$push': {'joined_projects': ObjectId(project_id)}}
+    )
+    
+    return jsonify({'message': 'You have joined the project successfully!'})
+
+@app.route('/api/project_contributors/<project_id>', methods=['GET'])
+@token_required
+def project_contributors(current_user, project_id):
+    # Get project
+    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
+    
+    if not project:
+        return jsonify({'message': 'Project not found!'}), 404
+    
+    # Get contributors
+    contributors = []
+    
+    if 'contributors' in project and project['contributors']:
+        contributor_ids = [ObjectId(user_id) for user_id in project['contributors']]
+        contributor_cursor = mongo.db.users.find({'_id': {'$in': contributor_ids}})
+        
+        for user in contributor_cursor:
+            contributors.append({
+                'id': str(user['_id']),
+                'name': user['name'],
+                'email': user['email'],
+                'profile_picture': user.get('profile_picture', ''),
+                'expertise': user.get('expertise', [])
+            })
+    
+    return jsonify(contributors)
+
+@app.route('/api/invite_contributor/<project_id>', methods=['POST'])
+@token_required
+def invite_contributor(current_user, project_id):
+    data = request.get_json()
+    
+    if 'email' not in data:
+        return jsonify({'message': 'Email is required!'}), 400
+    
+    # Get project
+    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
+    
+    if not project:
+        return jsonify({'message': 'Project not found!'}), 404
+    
+    # Check if user is the project creator
+    if str(project['created_by']) != str(current_user['_id']):
+        return jsonify({'message': 'Unauthorized!'}), 403
+    
+    # Find user by email
+    invited_user = mongo.db.users.find_one({'email': data['email']})
+    
+    if not invited_user:
+        return jsonify({'message': 'User not found!'}), 404
+    
+    # Check if user is already invited
+    if invited_user['_id'] in project.get('invited_users', []):
+        return jsonify({'message': 'User already invited!'}), 400
+    
+    # Check if user is already a contributor
+    if invited_user['_id'] in project.get('contributors', []):
+        return jsonify({'message': 'User is already a contributor!'}), 400
+    
+    # Add user to invited users
+    mongo.db.projects.update_one(
+        {'_id': ObjectId(project_id)},
+        {'$push': {'invited_users': invited_user['_id']}}
+    )
+    
+    # In a real app, you'd send an email or notification here
+    
+    return jsonify({'message': f'Invitation sent to {data["email"]}!'})
+
+# Data Collection Endpoints
+@app.route('/api/upload_picture/<project_id>', methods=['POST'])
+@token_required
+def upload_picture(current_user, project_id):
+    # Check if project exists
+    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
+    
+    if not project:
+        return jsonify({'message': 'Project not found!'}), 404
+    
+    # Check if user is a contributor or creator
+    if current_user['_id'] not in project.get('contributors', []) and current_user['_id'] != project['created_by']:
+        return jsonify({'message': 'Unauthorized!'}), 403
+    
+    # Check if file is provided
+    if 'picture' not in request.files:
+        return jsonify({'message': 'No picture provided!'}), 400
+    
+    picture = request.files['picture']
+    
+    if picture.filename == '':
+        return jsonify({'message': 'No picture selected!'}), 400
+    
+    # Get metadata
+    location = request.form.get('location', '{}')
+    notes = request.form.get('notes', '')
+    collection_site_id = request.form.get('collection_site_id', None)
+    
+    try:
+        location = eval(location)  # Convert string to dict, use json.loads in production
+    except:
+        location = {}
+    
+    # Save the image file
+    file_path, filename = save_image(picture)
+    
+    # Identify plant in the image
+    plant_data = identify_plant(file_path)
+    
+    # Create picture document
+    new_picture = {
+        'project_id': ObjectId(project_id),
+        'user_id': current_user['_id'],
+        'filename': filename,
+        'file_path': file_path,
+        'location': location,
+        'notes': notes,
+        'collection_site_id': ObjectId(collection_site_id) if collection_site_id else None,
+        'plant_identification': plant_data,
+        'is_match': plant_data['species'].lower() == project['plant_type'].lower(),
+        'uploaded_at': datetime.datetime.utcnow()
+    }
+    
+    picture_id = mongo.db.pictures.insert_one(new_picture).inserted_id
+    
+    # If the picture matches the project's plant type, update completion status
+    if new_picture['is_match'] and project['submissions_completed'] < project['submissions_needed']:
+        mongo.db.projects.update_one(
+            {'_id': ObjectId(project_id)},
+            {'$inc': {'submissions_completed': 1}}
+        )
+        
+        # Check if project has reached its completion target
+        updated_project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
+        if updated_project['submissions_completed'] >= updated_project['submissions_needed']:
+            mongo.db.projects.update_one(
+                {'_id': ObjectId(project_id)},
+                {'$set': {'status': 'completed'}}
+            )
+    
+    return jsonify({
+        'message': 'Picture uploaded successfully!',
+        'picture_id': str(picture_id),
+        'identification': plant_data,
+        'is_match': new_picture['is_match']
+    })
+
+@app.route('/api/project_pictures/<project_id>', methods=['GET'])
+@token_required
+def project_pictures(current_user, project_id):
+    # Get project
+    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
+    
+    if not project:
+        return jsonify({'message': 'Project not found!'}), 404
+    
+    # Check if user is authorized to view pictures
+    if current_user['_id'] != project['created_by'] and current_user['_id'] not in project.get('contributors', []):
+        return jsonify({'message': 'Unauthorized!'}), 403
+    
+    # Get pictures for the project
+    pictures = list(mongo.db.pictures.find({'project_id': ObjectId(project_id)}))
+    
+    # Convert ObjectId to string
+    for picture in pictures:
+        picture['_id'] = str(picture['_id'])
+        picture['project_id'] = str(picture['project_id'])
+        picture['user_id'] = str(picture['user_id'])
+        if picture.get('collection_site_id'):
+            picture['collection_site_id'] = str(picture['collection_site_id'])
+    
+    return jsonify(pictures)
+
+@app.route('/api/add_location/<project_id>', methods=['POST'])
+@token_required
+def add_location(current_user, project_id):
+    data = request.get_json()
+    
+    # Validate data
+    required_fields = ['name', 'latitude', 'longitude']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({'message': f'Missing required field: {field}'}), 400
+    
+    # Get project
+    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
+    
+    if not project:
+        return jsonify({'message': 'Project not found!'}), 404
+    
+    # Check if user is authorized
+    if current_user['_id'] != project['created_by'] and current_user['_id'] not in project.get('contributors', []):
+        return jsonify({'message': 'Unauthorized!'}), 403
+    
+    # Create new location
+    new_location = {
+        'project_id': ObjectId(project_id),
+        'name': data['name'],
+        'latitude': float(data['latitude']),
+        'longitude': float(data['longitude']),
+        'description': data.get('description', ''),
+        'added_by': current_user['_id'],
+        'created_at': datetime.datetime.utcnow()
+    }
+    
+    location_id = mongo.db.locations.insert_one(new_location).inserted_id
+    
+    # Add location to project's collection sites
+    mongo.db.projects.update_one(
+        {'_id': ObjectId(project_id)},
+        {'$push': {'collection_sites': location_id}}
+    )
+    
+    return jsonify({
+        'message': 'Location added successfully!',
+        'location_id': str(location_id)
+    })
+
+@app.route('/api/project_locations/<project_id>', methods=['GET'])
+@token_required
+def project_locations(current_user, project_id):
+    # Get project
+    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
+    
+    if not project:
+        return jsonify({'message': 'Project not found!'}), 404
+    
+    # Get locations for the project
+    locations = list(mongo.db.locations.find({'project_id': ObjectId(project_id)}))
+    
+    # Convert ObjectId to string
+    for location in locations:
+        location['_id'] = str(location['_id'])
+        location['project_id'] = str(location['project_id'])
+        location['added_by'] = str(location['added_by'])
+    
+    return jsonify(locations)
+
+@app.route('/api/post_message/<project_id>', methods=['POST'])
+@token_required
+def post_message(current_user, project_id):
+    data = request.get_json()
+    
+    if 'content' not in data:
+        return jsonify({'message': 'Message content is required!'}), 400
+    
+    # Get project
+    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
+    
+    if not project:
+        return jsonify({'message': 'Project not found!'}), 404
+    
+    # Check if user is authorized
+    if current_user['_id'] != project['created_by'] and current_user['_id'] not in project.get('contributors', []):
+        return jsonify({'message': 'Unauthorized!'}), 403
+    
+    # Create new message
+    new_message = {
+        'project_id': ObjectId(project_id),
+        'user_id': current_user['_id'],
+        'content': data['content'],
+        'created_at': datetime.datetime.utcnow()
+    }
+    
+    message_id = mongo.db.messages.insert_one(new_message).inserted_id
+    
+    return jsonify({
+        'message': 'Message posted successfully!',
+        'message_id': str(message_id)
+    })
+
+@app.route('/api/project_discussion/<project_id>', methods=['GET'])
+@token_required
+def project_discussion(current_user, project_id):
+    # Get project
+    project = mongo.db.projects.find_one({'_id': ObjectId(project_id)})
+    
+    if not project:
+        return jsonify({'message': 'Project not found!'}), 404
+    
+    # Check if user is authorized
+    if current_user['_id'] != project['created_by'] and current_user['_id'] not in project.get('contributors', []):
+        return jsonify({'message': 'Unauthorized!'}), 403
+    
+    # Get messages for the project
+    messages = list(mongo.db.messages.find({'project_id': ObjectId(project_id)}).sort('created_at', 1))
+    
+    # Convert ObjectId to string and add user info
+    for message in messages:
+        message['_id'] = str(message['_id'])
+        message['project_id'] = str(message['project_id'])
+        
+        # Get user info
+        user_id = message['user_id']
+        user = mongo.db.users.find_one({'_id': user_id})
+        
+        message['user'] = {
+            'id': str(user['_id']),
+            'name': user['name'],
+            'profile_picture': user.get('profile_picture', '')
+        }
+        
+        message['user_id'] = str(message['user_id'])
+    
+    return jsonify(messages)
+
 @app.route('/api/project_data/<project_id>', methods=['GET'])
 @token_required
 def project_data(current_user, project_id):
