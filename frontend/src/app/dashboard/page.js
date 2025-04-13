@@ -27,13 +27,13 @@ export default function Dashboard() {
     try {
       setIsLoading(true);
       // Fetch user bounties
-      const bountiesResponse = await fetch(`http://localhost:8080/api/get_user_bounties?username=${user}`);
+      const bountiesResponse = await fetch(`/api/get_user_bounties?username=${user}`);
       const bountiesData = await bountiesResponse.json();
       setCreatedBounties(bountiesData.created_bounties);
       setSubmittedBounties(bountiesData.submitted_bounties);
 
       // Fetch user profile (if this endpoint exists)
-      const profileResponse = await fetch(`http://localhost:8080/api/get_user_profile?username=${user}`);
+      const profileResponse = await fetch(`/api/get_user_profile?username=${user}`);
       const profileData = await profileResponse.json();
       setUserProfile(profileData);
     } catch (err) {

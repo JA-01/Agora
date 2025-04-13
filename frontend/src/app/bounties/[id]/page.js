@@ -30,7 +30,7 @@ export default function BountyDetails() {
   const fetchBountyDetails = async () => {
     try {
       setIsLoading(true);
-      const response = await fetch(`http://localhost:8080/api/get_bounty_details?bounty_id=${params.id}`);
+      const response = await fetch(`/api/get_bounty_details?bounty_id=${params.id}`);
       const data = await response.json();
       setBountyDetails(data.bounty);
       setSubmissions(data.submissions);
@@ -64,7 +64,7 @@ export default function BountyDetails() {
     }
 
     try {
-      const response = await fetch('http://localhost:8080/api/submit_bounty', {
+      const response = await fetch('/api/submit_bounty', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

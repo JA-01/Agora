@@ -36,7 +36,7 @@ export default function CreateBounty() {
         throw new Error('You must be logged in to create a bounty');
       }
 
-      const response = await fetch('http://localhost:8080/api/create_bounty', {
+      const response = await fetch('/api/create_bounty', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -20,6 +20,7 @@ MONGO_URI_STRING = os.getenv("MONGO_URI_STRING")
 app = Flask(__name__)
 CORS(app)
 
+
 # MongoDB Collections
 mongoClient = MongoClient(MONGO_URI_STRING, server_api=ServerApi('1'))
 db = mongoClient["PlantBountyApp"]
@@ -35,7 +36,6 @@ def identify_plant(image_base64):
     Note: Replace with actual plant identification API call
     """
     try:
-        # Example API call structure - you'll need to implement actual API integration
         response = requests.post(
             "https://plant-identification-api.com/identify",
             headers={

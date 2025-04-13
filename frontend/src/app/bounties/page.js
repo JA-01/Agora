@@ -24,7 +24,7 @@ export default function BountiesList() {
       if (filters.plant_species) queryParams.append('plant_species', filters.plant_species);
       if (filters.min_reward) queryParams.append('min_reward', filters.min_reward);
 
-      const response = await fetch(`http://localhost:8080/api/search_bounties?${queryParams}`);
+      const response = await fetch(`/api/search_bounties?${queryParams}`);
       const data = await response.json();
       setBounties(data);
     } catch (err) {
