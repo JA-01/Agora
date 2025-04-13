@@ -1,0 +1,154 @@
+import { useState, useEffect } from 'react';
+import { ChartBarIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
+
+export default function DataVisualizationTab({ projectID, username }) {
+  const [visualizationData, setVisualizationData] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [selectedVisualization, setSelectedVisualization] = useState('timeline');
+  
+  useEffect(() => {
+    fetchVisualizationData();
+  }, [projectID, selectedVisualization]);
+  
+  const fetchVisualizationData = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch(`http://localhost:5000/api/project_visualization?projectID=${projectID}&type=${selectedVisualization}`);
+      const data = await response.json();
+      
+      if (data.success) {
+        setVisualizationData(data.data || null);
+      } else {
+        setError('Failed to load visualization data');
+      }
+    } catch (err) {
+      setError('Something went wrong. Please try again.');
+      console.error(err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  const renderVisualization = () => {
+    if (!visualizationData || !visualizationData.chartData) {
+      return (
+        <div className="text-center py-12">
+          <ChartBarIcon className="h-12 w-12 text-green-300 mx-auto mb-3" />
+          <h3 className="text-lg font-medium text-green-900 mb-1">No Data Available</h3>
+          <p className="text-green-700">
+            Not enough data has been collected to generate visualizations yet.
+          </p>
+        </div>
+      );
+    }
+    
+    // This is a placeholder. In a real app, you would render actual charts
+    // using a library like Chart.js, recharts, or d3.js
+    return (
+      <div className="bg-white border border-green-100 rounded-lg p-4 min-h-72">
+        <h3 className="text-lg font-medium text-green-900 mb-4">{visualizationData.title}</h3>
+        
+        {/* Placeholder for chart */}
+        <div className="h-64 bg-green-50 rounded-md flex items-center justify-center">
+          <p className="text-green-700 text-center">
+            [Data Visualization Chart Would Appear Here]<br />
+            <span className="text-sm opacity-70">Using real data from your project</span>
+          </p>
+        </div>
+        
+        <div className="mt-4 text-sm text-green-800">
+          <p className="font-medium">Key Insights:</p>
+          <ul className="list-disc pl-5 mt-1 space-y-1">
+            {visualizationData.insights?.map((insight, index) => (
+              <li key={index}>{insight}</li>
+            )) || <li>Not enough data to generate insights</li>}
+          </ul>
+        </div>
+      </div>
+    );
+  };
+  
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-xl font-bold text-green-900">Data Analysis</h2>
+        <button
+          onClick={fetchVisualizationData}
+          className="flex items-center text-green-700 hover:text-green-800"
+        >
+          <ArrowPathIcon className="h-4 w-4 mr-1" />
+          <span className="text-sm">Refresh</span>
+        </button>
+      </div>
+      
+      {error && (
+        <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-md text-sm">
+          {error}
+        </div>
+      )}
+      
+      <div className="mb-6">
+        <div className="flex space-x-2 border-b border-green-200">
+          <button
+            onClick={() => setSelectedVisualization('timeline')}
+            className={`px-4 py-2 text-sm font-medium ${
+              selectedVisualization === 'timeline' 
+                ? 'text-green-700 border-b-2 border-green-500' 
+                : 'text-green-600 hover:text-green-800'
+            }`}
+          >
+            Timeline
+          </button>
+          <button
+            onClick={() => setSelectedVisualization('distribution')}
+            className={`px-4 py-2 text-sm font-medium ${
+              selectedVisualization === 'distribution' 
+                ? 'text-green-700 border-b-2 border-green-500' 
+                : 'text-green-600 hover:text-green-800'
+            }`}
+          >
+            Distribution
+          </button>
+          <button
+            onClick={() => setSelectedVisualization('comparison')}
+            className={`px-4 py-2 text-sm font-medium ${
+              selectedVisualization === 'comparison' 
+                ? 'text-green-700 border-b-2 border-green-500' 
+                : 'text-green-600 hover:text-green-800'
+            }`}
+          >
+            Comparison
+          </button>
+          <button
+            onClick={() => setSelectedVisualization('map')}
+            className={`px-4 py-2 text-sm font-medium ${
+              selectedVisualization === 'map' 
+                ? 'text-green-700 border-b-2 border-green-500' 
+                : 'text-green-600 hover:text-green-800'
+            }`}
+          >
+            Location Map
+          </button>
+        </div>
+      </div>
+      
+      {isLoading ? (
+        <div className="flex justify-center py-8">
+          <div className="animate-spin h-8 w-8 border-4 border-green-500 rounded-full border-t-transparent"></div>
+        </div>
+      ) : (
+        renderVisualization()
+      )}
+      
+      <div className="mt-6 bg-green-50 p-4 rounded-lg border border-green-200">
+        <h3 className="text-lg font-medium text-green-900 mb-2">About This Data</h3>
+        <p className="text-green-800 text-sm">
+          This visualization shows the {selectedVisualization} of data collected for this project. 
+          The data is anonymized and aggregated from all contributors. This view updates automatically 
+          as new data is collected.
+        </p>
+      </div>
+    </div>
+  );
+}

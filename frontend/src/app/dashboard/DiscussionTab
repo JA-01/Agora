@@ -1,0 +1,180 @@
+import { useState, useEffect } from 'react';
+import { ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
+
+export default function DiscussionTab({ projectID, username, project }) {
+  const [posts, setPosts] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [newMessage, setNewMessage] = useState('');
+  const [isPosting, setIsPosting] = useState(false);
+  
+  useEffect(() => {
+    fetchPosts();
+  }, [projectID]);
+  
+  const fetchPosts = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch(`http://localhost:5000/api/project_discussion?projectID=${projectID}`);
+      const data = await response.json();
+      
+      if (data.success) {
+        setPosts(data.posts || []);
+      } else {
+        setError('Failed to load discussion');
+      }
+    } catch (err) {
+      setError('Something went wrong. Please try again.');
+      console.error(err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  const handlePostMessage = async (e) => {
+    e.preventDefault();
+    
+    if (!newMessage.trim()) return;
+    
+    setIsPosting(true);
+    
+    try {
+      const response = await fetch('http://localhost:5000/api/post_message', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          projectID,
+          username,
+          message: newMessage,
+          timestamp: new Date().toISOString()
+        }),
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        setNewMessage('');
+        fetchPosts();
+      } else {
+        setError('Failed to post message');
+      }
+    } catch (err) {
+      setError('Something went wrong. Please try again.');
+      console.error(err);
+    } finally {
+      setIsPosting(false);
+    }
+  };
+  
+  // Format timestamp to show date and time
+  const formatTimestamp = (timestamp) => {
+    const date = new Date(timestamp);
+    return date.toLocaleDateString() + ' at ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+  
+  if (isLoading) {
+    return <div className="flex justify-center py-8"><div className="animate-spin h-8 w-8 border-4 border-green-500 rounded-full border-t-transparent"></div></div>;
+  }
+  
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-xl font-bold text-green-900">Discussion</h2>
+        <span className="text-green-800">{posts.length} messages</span>
+      </div>
+      
+      {error && (
+        <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-md text-sm">
+          {error}
+        </div>
+      )}
+      
+      <div className="mb-6">
+        <form onSubmit={handlePostMessage}>
+          <label htmlFor="newMessage" className="block text-sm font-medium text-green-900 mb-1">
+            Post a Message
+          </label>
+          <div className="mt-1">
+            <textarea
+              id="newMessage"
+              name="newMessage"
+              rows={3}
+              value={newMessage}
+              onChange={(e) => setNewMessage(e.target.value)}
+              className="shadow-sm focus:ring-green-500 focus:border-green-500 block w-full sm:text-sm border border-green-300 rounded-md"
+              placeholder="Share findings, ask questions, or coordinate with other contributors..."
+            />
+          </div>
+          <div className="mt-2 flex justify-end">
+            <button
+              type="submit"
+              disabled={isPosting || !newMessage.trim()}
+              className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50"
+            >
+              {isPosting ? 'Posting...' : 'Post Message'}
+            </button>
+          </div>
+        </form>
+      </div>
+      
+      {posts.length === 0 ? (
+        <div className="text-center py-8">
+          <ChatBubbleLeftRightIcon className="h-12 w-12 text-green-300 mx-auto mb-3" />
+          <h3 className="text-lg font-medium text-green-900 mb-1">No Messages Yet</h3>
+          <p className="text-green-700">
+            Start the conversation by posting the first message!
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {posts.map((post, index) => (
+            <div 
+              key={index} 
+              className={`p-4 rounded-lg ${
+                post.username === username 
+                  ? 'bg-green-50 border border-green-100' 
+                  : 'bg-white border border-gray-200'
+              }`}
+            >
+              <div className="flex justify-between items-start">
+                <div className="flex items-center">
+                  <div className={`h-8 w-8 rounded-full flex items-center justify-center ${
+                    post.username === project.creator 
+                      ? 'bg-green-600 text-white' 
+                      : 'bg-green-100 text-green-800'
+                  }`}>
+                    {post.username.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="ml-2">
+                    <p className="text-sm font-medium text-green-900">
+                      {post.username} 
+                      {post.username === project.creator && (
+                        <span className="ml-1 text-xs font-normal bg-green-100 text-green-800 px-1.5 py-0.5 rounded">
+                          Owner
+                        </span>
+                      )}
+                    </p>
+                    <p className="text-xs text-green-600">{formatTimestamp(post.timestamp)}</p>
+                  </div>
+                </div>
+                {post.username === username && (
+                  <button
+                    className="text-green-600 hover:text-green-800 text-xs"
+                    // Implement delete functionality if needed
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
+              <div className="mt-2 text-green-800 whitespace-pre-line">
+                {post.message}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

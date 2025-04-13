@@ -1,0 +1,237 @@
+import { useState, useEffect } from 'react';
+import { ArrowDownTrayIcon, DocumentChartBarIcon, DocumentIcon } from '@heroicons/react/24/outline';
+
+export default function DownloadTab({ projectID, username, project }) {
+  const [datasets, setDatasets] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [exportOptions, setExportOptions] = useState({
+    format: 'csv',
+    includeMetadata: true,
+    anonymizeContributors: true,
+    timeRange: 'all'
+  });
+  
+  useEffect(() => {
+    fetchDatasets();
+  }, [projectID]);
+  
+  const fetchDatasets = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch(`http://localhost:5000/api/project_datasets?projectID=${projectID}`);
+      const data = await response.json();
+      
+      if (data.success) {
+        setDatasets(data.datasets || []);
+      } else {
+        setError('Failed to load available datasets');
+      }
+    } catch (err) {
+      setError('Something went wrong. Please try again.');
+      console.error(err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  const handleExportOptionChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setExportOptions({
+      ...exportOptions,
+      [name]: type === 'checkbox' ? checked : value
+    });
+  };
+  
+  const downloadDataset = (datasetId) => {
+    const queryParams = new URLSearchParams({
+      projectID,
+      datasetId,
+      format: exportOptions.format,
+      includeMetadata: exportOptions.includeMetadata,
+      anonymizeContributors: exportOptions.anonymizeContributors,
+      timeRange: exportOptions.timeRange
+    }).toString();
+    
+    window.location.href = `http://localhost:5000/api/download_dataset?${queryParams}`;
+  };
+  
+  const downloadAllData = () => {
+    const queryParams = new URLSearchParams({
+      projectID,
+      format: exportOptions.format,
+      includeMetadata: exportOptions.includeMetadata,
+      anonymizeContributors: exportOptions.anonymizeContributors,
+      timeRange: exportOptions.timeRange
+    }).toString();
+    
+    window.location.href = `http://localhost:5000/api/download_all_data?${queryParams}`;
+  };
+  
+  const isOwnerOrResearcher = project.creator === username || (project.researchers && project.researchers.includes(username));
+  
+  if (isLoading) {
+    return <div className="flex justify-center py-8"><div className="animate-spin h-8 w-8 border-4 border-green-500 rounded-full border-t-transparent"></div></div>;
+  }
+  
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-xl font-bold text-green-900">Download Data</h2>
+      </div>
+      
+      {error && (
+        <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-md text-sm">
+          {error}
+        </div>
+      )}
+      
+      {!isOwnerOrResearcher && (
+        <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg text-yellow-800">
+          <p className="text-sm">
+            Access to raw data is limited to project owners and authorized researchers. 
+            If you need access to this data for research purposes, please contact the project owner.
+          </p>
+        </div>
+      )}
+      
+      <div className="mb-6 bg-green-50 p-4 rounded-lg border border-green-200">
+        <h3 className="text-lg font-medium text-green-900 mb-3">Export Options</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-green-800 mb-1">
+              File Format
+            </label>
+            <select
+              name="format"
+              value={exportOptions.format}
+              onChange={handleExportOptionChange}
+              className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-green-300 focus:outline-none focus:ring-green-500 focus:border-green-500 sm:text-sm rounded-md"
+              disabled={!isOwnerOrResearcher}
+            >
+              <option value="csv">CSV (Comma Separated Values)</option>
+              <option value="json">JSON</option>
+              <option value="xlsx">Excel Spreadsheet</option>
+            </select>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-green-800 mb-1">
+              Time Range
+            </label>
+            <select
+              name="timeRange"
+              value={exportOptions.timeRange}
+              onChange={handleExportOptionChange}
+              className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-green-300 focus:outline-none focus:ring-green-500 focus:border-green-500 sm:text-sm rounded-md"
+              disabled={!isOwnerOrResearcher}
+            >
+              <option value="all">All Time</option>
+              <option value="recent">Last 30 Days</option>
+              <option value="month">Current Month</option>
+              <option value="year">Current Year</option>
+            </select>
+          </div>
+        </div>
+        
+        <div className="mt-4 flex flex-col sm:flex-row sm:space-x-6">
+          <label className="flex items-center">
+            <input
+              type="checkbox"
+              name="includeMetadata"
+              checked={exportOptions.includeMetadata}
+              onChange={handleExportOptionChange}
+              className="h-4 w-4 text-green-600 focus:ring-green-500 border-gray-300 rounded"
+              disabled={!isOwnerOrResearcher}
+            />
+            <span className="ml-2 text-sm text-green-800">Include metadata</span>
+          </label>
+          
+          <label className="flex items-center mt-2 sm:mt-0">
+            <input
+              type="checkbox"
+              name="anonymizeContributors"
+              checked={exportOptions.anonymizeContributors}
+              onChange={handleExportOptionChange}
+              className="h-4 w-4 text-green-600 focus:ring-green-500 border-gray-300 rounded"
+              disabled={!isOwnerOrResearcher}
+            />
+            <span className="ml-2 text-sm text-green-800">Anonymize contributor information</span>
+          </label>
+        </div>
+        
+        {isOwnerOrResearcher && (
+          <div className="mt-4">
+            <button
+              onClick={downloadAllData}
+              className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
+            >
+              <ArrowDownTrayIcon className="-ml-1 mr-2 h-5 w-5" aria-hidden="true" />
+              Download All Data
+            </button>
+          </div>
+        )}
+      </div>
+      
+      {datasets.length === 0 ? (
+        <div className="text-center py-8">
+          <DocumentChartBarIcon className="h-12 w-12 text-green-300 mx-auto mb-3" />
+          <h3 className="text-lg font-medium text-green-900 mb-1">No Datasets Available</h3>
+          <p className="text-green-700">
+            This project hasn't collected enough data yet to generate datasets.
+          </p>
+        </div>
+      ) : (
+        <div>
+          <h3 className="text-lg font-medium text-green-900 mb-3">Available Datasets</h3>
+          <div className="bg-white overflow-hidden shadow-sm rounded-lg border border-green-100">
+            <ul className="divide-y divide-green-100">
+              {datasets.map((dataset, index) => (
+                <li key={index} className="p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center">
+                      <div className="bg-green-100 rounded-md p-2">
+                        <DocumentIcon className="h-6 w-6 text-green-600" />
+                      </div>
+                      <div className="ml-3">
+                        <p className="text-sm font-medium text-green-900">{dataset.name}</p>
+                        <p className="text-xs text-green-700">{dataset.description}</p>
+                      </div>
+                    </div>
+                    <div className="flex flex-col items-end">
+                      <span className="text-xs text-green-600">
+                        {dataset.dataPoints} data points • Last updated: {dataset.lastUpdated}
+                      </span>
+                      {isOwnerOrResearcher && (
+                        <button
+                          onClick={() => downloadDataset(dataset.id)}
+                          className="mt-1 inline-flex items-center px-2.5 py-1.5 border border-transparent text-xs font-medium rounded text-green-700 bg-green-100 hover:bg-green-200 focus:outline-none"
+                        >
+                          <ArrowDownTrayIcon className="mr-1 h-4 w-4" />
+                          Download
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+      
+      <div className="mt-6 bg-green-50 p-4 rounded-lg border border-green-200">
+        <h3 className="text-lg font-medium text-green-900 mb-2">About Data Access</h3>
+        <p className="text-green-800 text-sm mb-3">
+          Data collected through Agora is made available to researchers while protecting the privacy of contributors. 
+          By default, all data is anonymized when downloaded.
+        </p>
+        <p className="text-green-800 text-sm">
+          By contributing data to this project, you agree that your observations may be used for scientific 
+          research purposes. All data is shared under an open science license that promotes collaboration 
+          and knowledge sharing.
+        </p>
+      </div>
+    </div>
+  );
+}

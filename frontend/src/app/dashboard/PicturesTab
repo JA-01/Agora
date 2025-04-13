@@ -1,0 +1,302 @@
+import { useState, useEffect } from 'react';
+import { PhotoIcon, ArrowUpTrayIcon } from '@heroicons/react/24/outline';
+
+export default function PicturesTab({ projectID, username }) {
+  const [pictures, setPictures] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [isUploading, setIsUploading] = useState(false);
+  const [selectedPicture, setSelectedPicture] = useState(null);
+  const [uploadData, setUploadData] = useState({
+    caption: '',
+    location: '',
+    date: '',
+    file: null
+  });
+  
+  useEffect(() => {
+    fetchPictures();
+  }, [projectID]);
+  
+  const fetchPictures = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch(`http://localhost:5000/api/project_pictures?projectID=${projectID}`);
+      const data = await response.json();
+      
+      if (data.success) {
+        setPictures(data.pictures || []);
+      } else {
+        setError('Failed to load pictures');
+      }
+    } catch (err) {
+      setError('Something went wrong. Please try again.');
+      console.error(err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  const handleFileChange = (e) => {
+    if (e.target.files && e.target.files[0]) {
+      setUploadData({
+        ...uploadData,
+        file: e.target.files[0]
+      });
+    }
+  };
+  
+  const handleUploadDataChange = (e) => {
+    const { name, value } = e.target;
+    setUploadData({
+      ...uploadData,
+      [name]: value
+    });
+  };
+  
+  const handleUpload = async (e) => {
+    e.preventDefault();
+    
+    if (!uploadData.file) {
+      setError('Please select a file to upload');
+      return;
+    }
+    
+    setIsUploading(true);
+    
+    // In a real app, you would use FormData to upload the file
+    const formData = new FormData();
+    formData.append('file', uploadData.file);
+    formData.append('caption', uploadData.caption);
+    formData.append('location', uploadData.location);
+    formData.append('date', uploadData.date);
+    formData.append('projectID', projectID);
+    formData.append('username', username);
+    
+    try {
+      const response = await fetch('http://localhost:5000/api/upload_picture', {
+        method: 'POST',
+        body: formData,
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        // Reset form and refresh pictures
+        setUploadData({
+          caption: '',
+          location: '',
+          date: '',
+          file: null
+        });
+        fetchPictures();
+      } else {
+        setError(data.message || 'Failed to upload picture');
+      }
+    } catch (err) {
+      setError('Something went wrong. Please try again.');
+      console.error(err);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+  
+  const openPictureModal = (picture) => {
+    setSelectedPicture(picture);
+  };
+  
+  const closePictureModal = () => {
+    setSelectedPicture(null);
+  };
+  
+  if (isLoading) {
+    return <div className="flex justify-center py-8"><div className="animate-spin h-8 w-8 border-4 border-green-500 rounded-full border-t-transparent"></div></div>;
+  }
+  
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-xl font-bold text-green-900">Plant Pictures</h2>
+        <span className="text-green-800">{pictures.length} images collected</span>
+      </div>
+      
+      {error && (
+        <div className="mb-4 p-3 bg-red-50 text-red-700 rounded-md text-sm">
+          {error}
+        </div>
+      )}
+      
+      <div className="mb-6 bg-green-50 p-4 rounded-lg border border-green-200">
+        <h3 className="text-lg font-medium text-green-900 mb-3">Upload New Picture</h3>
+        <form onSubmit={handleUpload} className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label htmlFor="caption" className="block text-sm font-medium text-green-800 mb-1">
+                Caption
+              </label>
+              <input
+                type="text"
+                id="caption"
+                name="caption"
+                value={uploadData.caption}
+                onChange={handleUploadDataChange}
+                className="w-full px-3 py-2 border border-green-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                placeholder="Describe the plant"
+              />
+            </div>
+            <div>
+              <label htmlFor="location" className="block text-sm font-medium text-green-800 mb-1">
+                Location
+              </label>
+              <input
+                type="text"
+                id="location"
+                name="location"
+                value={uploadData.location}
+                onChange={handleUploadDataChange}
+                className="w-full px-3 py-2 border border-green-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+                placeholder="Where was it found?"
+              />
+            </div>
+            <div>
+              <label htmlFor="date" className="block text-sm font-medium text-green-800 mb-1">
+                Date
+              </label>
+              <input
+                type="date"
+                id="date"
+                name="date"
+                value={uploadData.date}
+                onChange={handleUploadDataChange}
+                className="w-full px-3 py-2 border border-green-300 rounded-md focus:outline-none focus:ring-2 focus:ring-green-500"
+              />
+            </div>
+          </div>
+          
+          <div className="flex items-center space-x-3">
+            <div className="flex-1">
+              <label className="block text-sm font-medium text-green-800 mb-1">
+                Picture File
+              </label>
+              <div className="relative border border-green-300 rounded-md px-3 py-2">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileChange}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+                <div className="flex items-center text-green-700">
+                  <ArrowUpTrayIcon className="h-5 w-5 mr-2" />
+                  {uploadData.file ? uploadData.file.name : 'Click to select image file'}
+                </div>
+              </div>
+            </div>
+            <div className="pt-6">
+              <button
+                type="submit"
+                disabled={isUploading || !uploadData.file}
+                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isUploading ? 'Uploading...' : 'Upload'}
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+      
+      {pictures.length === 0 ? (
+        <div className="text-center py-8">
+          <PhotoIcon className="h-12 w-12 text-green-300 mx-auto mb-3" />
+          <h3 className="text-lg font-medium text-green-900 mb-1">No Pictures Yet</h3>
+          <p className="text-green-700">
+            Be the first to contribute pictures to this research project!
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {pictures.map((picture, index) => (
+            <div 
+              key={index} 
+              className="bg-white rounded-lg overflow-hidden shadow-sm cursor-pointer hover:shadow-md transition-shadow"
+              onClick={() => openPictureModal(picture)}
+            >
+              {/* In a real app, this would be an actual image */}
+              <div className="h-32 bg-green-100 flex items-center justify-center">
+                <PhotoIcon className="h-8 w-8 text-green-500" />
+              </div>
+              <div className="p-2">
+                <p className="text-sm font-medium text-green-900 truncate">{picture.caption}</p>
+                <p className="text-xs text-green-700">{picture.location}</p>
+                <div className="flex justify-between items-center mt-1">
+                  <span className="text-xs text-green-600">{picture.date}</span>
+                  <span className="text-xs text-green-600">by {picture.contributor}</span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      
+      {/* Picture Modal */}
+      {selectedPicture && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-auto">
+            <div className="p-4 border-b border-green-100">
+              <div className="flex justify-between items-center">
+                <h3 className="text-lg font-medium text-green-900">{selectedPicture.caption}</h3>
+                <button 
+                  onClick={closePictureModal}
+                  className="text-green-500 hover:text-green-700"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            
+            <div className="p-4">
+              {/* In a real app, this would be an actual large image */}
+              <div className="h-72 bg-green-100 flex items-center justify-center mb-4">
+                <PhotoIcon className="h-16 w-16 text-green-500" />
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4 text-green-800">
+                <div>
+                  <p className="text-sm font-medium">Location</p>
+                  <p>{selectedPicture.location}</p>
+                </div>
+                <div>
+                  <p className="text-sm font-medium">Date</p>
+                  <p>{selectedPicture.date}</p>
+                </div>
+                <div>
+                  <p className="text-sm font-medium">Contributor</p>
+                  <p>{selectedPicture.contributor}</p>
+                </div>
+                <div>
+                  <p className="text-sm font-medium">Uploaded</p>
+                  <p>{selectedPicture.uploadDate}</p>
+                </div>
+              </div>
+              
+              {selectedPicture.notes && (
+                <div className="mt-4">
+                  <p className="text-sm font-medium text-green-800">Notes</p>
+                  <p className="text-green-700 mt-1">{selectedPicture.notes}</p>
+                </div>
+              )}
+            </div>
+            
+            <div className="p-4 border-t border-green-100 flex justify-end">
+              <button
+                onClick={closePictureModal}
+                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
