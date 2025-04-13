@@ -240,62 +240,6 @@ def update_profile(current_user):
     return jsonify({'message': 'Profile updated successfully!'})
 
 
-@app.route('/api/create_project', methods=['POST'])
-@token_required
-def create_project(current_user):
-    data = request.get_json()
-    
-    
-    required_fields = ['title', 'description', 'plant_type', 'timeframe', 'payment', 'submissions_needed', 'action_type', 'location']
-    for field in required_fields:
-        if field not in data:
-            return jsonify({'message': f'Missing required field: {field}'}), 400
-    
-    
-    valid_actions = ['research', 'removal']
-    if data['action_type'] not in valid_actions:
-        return jsonify({'message': f'Invalid action type. Must be one of: {valid_actions}'}), 400
-        
-    
-    if data['action_type'] == 'removal' and not current_user.get('is_verified_org', False):
-        return jsonify({'message': 'Only verified organizations can create removal projects'}), 403
-    
-    
-    new_project = {
-        'title': data['title'],
-        'description': data['description'],
-        'plant_type': data['plant_type'],
-        'timeframe': {
-            'start': datetime.datetime.fromisoformat(data['timeframe']['start']),
-            'end': datetime.datetime.fromisoformat(data['timeframe']['end'])
-        },
-        'payment': float(data['payment']),
-        'submissions_needed': int(data['submissions_needed']),
-        'submissions_completed': 0,
-        'action_type': data['action_type'],
-        'location': data['location'],
-        'additional_notes': data.get('additional_notes', ''),
-        'created_by': current_user['_id'],
-        'contributors': [],
-        'invited_users': [],
-        'collection_sites': [],
-        'status': 'open',
-        'created_at': datetime.datetime.utcnow(),
-        'updated_at': datetime.datetime.utcnow()
-    }
-    
-    project_id = mongo.db.projects.insert_one(new_project).inserted_id
-    
-    
-    mongo.db.users.update_one(
-        {'_id': current_user['_id']},
-        {'$push': {'created_projects': project_id}}
-    )
-    
-    return jsonify({
-        'message': 'Project created successfully!',
-        'project_id': str(project_id)
-    }), 201
 
 @app.route('/api/update_project/<project_id>', methods=['PUT'])
 @token_required
@@ -1350,44 +1294,60 @@ def simplified_get_project():
         return jsonify({'success': True, 'project': formatted_project})
     except:
         return jsonify({'success': False, 'message': 'Invalid project ID!'}), 400
-
+    
 @app.route('/api/create_project', methods=['POST'])
 def simplified_create_project():
-    data = request.get_json()
+    try:
+        data = request.get_json()
+        
+        # Get username
+        username = data.get('username')
+        print(f"Received username: {username}")
+        print(f"Received data: {data}")
+        
+        if not username:
+            print("Username is missing")
+            return jsonify({'success': False, 'message': 'Username is required!'}), 400
+        
+        # Find user by username
+        user = mongo.db.users.find_one({'name': username})
+        if not user:
+            print(f"User not found: {username}")
+            # Let's print out all users to help debug
+            all_users = list(mongo.db.users.find({}, {'name': 1}))
+            print("Existing users:")
+            for existing_user in all_users:
+                print(existing_user.get('name'))
+            
+            return jsonify({'success': False, 'message': 'User not found!'}), 404
+        
+        # Create new project with simplified fields
+        new_project = {
+            'title': data.get('title', ''),
+            'description': data.get('description', ''),
+            'plant_type': data.get('plantType', ''),
+            'additional_notes': data.get('dataNeeded', ''),
+            'location': {'name': data.get('location', '')},
+            'created_by': user['_id'],
+            'contributors': [],
+            'submissions_completed': 0,
+            'submissions_needed': 10,  # Default value
+            'status': 'pending',
+            'created_at': datetime.datetime.utcnow(),
+            'action_type': 'research'  # Default value
+        }
+        
+        project_id = mongo.db.projects.insert_one(new_project).inserted_id
+        
+        return jsonify({
+            'success': True,
+            'message': 'Project created successfully!',
+            'projectId': str(project_id)
+        }), 201
     
-    # Get username
-    username = data.get('username')
-    if not username:
-        return jsonify({'success': False, 'message': 'Username is required!'}), 400
-    
-    # Find user by username
-    user = mongo.db.users.find_one({'name': username})
-    if not user:
-        return jsonify({'success': False, 'message': 'User not found!'}), 404
-    
-    # Create new project with simplified fields
-    new_project = {
-        'title': data.get('title', ''),
-        'description': data.get('description', ''),
-        'plant_type': data.get('plantType', ''),
-        'additional_notes': data.get('dataNeeded', ''),
-        'location': {'name': data.get('location', '')},
-        'created_by': user['_id'],
-        'contributors': [],
-        'submissions_completed': 0,
-        'submissions_needed': 10,  # Default value
-        'status': 'pending',
-        'created_at': datetime.datetime.utcnow(),
-        'action_type': 'research'  # Default value
-    }
-    
-    project_id = mongo.db.projects.insert_one(new_project).inserted_id
-    
-    return jsonify({
-        'success': True,
-        'message': 'Project created successfully!',
-        'projectId': str(project_id)
-    })
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        return jsonify({'success': False, 'message': 'An unexpected error occurred'}), 500
 
 @app.route('/api/join_project', methods=['POST'])
 def simplified_join_project():
@@ -1567,4 +1527,4 @@ if __name__ == "__main__":
     mongo.db.locations.create_index([('project_id', 1)])
     mongo.db.messages.create_index([('project_id', 1)])
     
-    app.run(debug=True)
+    app.run(debug=True, port = 5000)
