@@ -12,9 +12,11 @@
     "@heroicons/react": "^2.0.18",
     "@stripe/react-stripe-js": "^3.6.0",
     "@stripe/stripe-js": "^7.0.0",
+    "heroicons": "^2.2.0",
     "next": "15.2.4",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-icons": "^5.5.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
@@ -24,6 +26,6 @@
     "tailwindcss": "^4"
   },
   "engines": {
-  "node": ">=18.x"
+    "node": ">=18.x"
   }
 }

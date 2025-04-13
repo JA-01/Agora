@@ -3,6 +3,14 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { 
+  UserPlusIcon, 
+  LockClosedIcon, 
+  ArrowPathIcon,
+  UserCircleIcon,
+  CheckBadgeIcon,
+  ArrowRightIcon
+} from '@heroicons/react/24/outline';
 
 export default function Register() {
   const [username, setUsername] = useState('');
@@ -49,89 +57,110 @@ export default function Register() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
-      <div className="sm:mx-auto sm:w-full sm:max-w-md">
-        <h2 className="mt-6 text-center text-3xl font-extrabold text-gray-900">
-          Create a new account
-        </h2>
-        <p className="mt-2 text-center text-sm text-gray-600">
-          Or{' '}
-          <Link href="/login" className="font-medium text-indigo-600 hover:text-indigo-500">
-            sign in to your existing account
-          </Link>
-        </p>
-      </div>
+    <div className="min-h-screen bg-[#DADDD8] flex flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-md mx-auto w-full">
+        {/* Header */}
+        <div className="bg-[#4B5842] rounded-2xl border border-[#8FB339] shadow-md p-8 mb-8">
+          <h1 className="text-3xl font-extrabold text-white mb-2 text-center flex items-center justify-center">
+            <UserPlusIcon className="w-8 h-8 mr-3 text-[#B7CE63]" />
+            Join Agora
+          </h1>
+          <p className="text-[#C7D59F] text-center max-w-sm mx-auto">
+            Join our community of citizen scientists and plant researchers
+          </p>
+        </div>
 
-      <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-        <div className="bg-white py-8 px-4 shadow sm:rounded-lg sm:px-10">
+        {/* Registration Form */}
+        <div className="bg-white rounded-2xl border border-[#8FB339] shadow-md p-6">
           <form className="space-y-6" onSubmit={handleSubmit}>
             {error && (
-              <div className="p-3 bg-red-50 text-red-700 rounded-md text-sm">
+              <div className="p-3 bg-red-100 border border-red-400 text-red-800 rounded-lg text-sm">
                 {error}
               </div>
             )}
             
             <div>
-              <label htmlFor="username" className="block text-sm font-medium text-gray-700">
+              <label htmlFor="username" className="block text-sm font-medium text-[#4B5842] mb-2 flex items-center">
+                <UserCircleIcon className="w-5 h-5 mr-2 text-[#8FB339]" />
                 Username
               </label>
-              <div className="mt-1">
-                <input
-                  id="username"
-                  name="username"
-                  type="text"
-                  required
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  className="appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                />
-              </div>
+              <input
+                id="username"
+                name="username"
+                type="text"
+                required
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="w-full px-4 py-3 rounded-lg bg-[#DADDD8]/50 border-2 border-[#8FB339] text-[#4B5842] placeholder-[#4B5842]/50 focus:outline-none focus:ring-2 focus:ring-[#B7CE63] focus:border-transparent"
+                placeholder="Choose a username"
+              />
             </div>
 
             <div>
-              <label htmlFor="password" className="block text-sm font-medium text-gray-700">
+              <label htmlFor="password" className="block text-sm font-medium text-[#4B5842] mb-2 flex items-center">
+                <LockClosedIcon className="w-5 h-5 mr-2 text-[#8FB339]" />
                 Password
               </label>
-              <div className="mt-1">
-                <input
-                  id="password"
-                  name="password"
-                  type="password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                />
-              </div>
+              <input
+                id="password"
+                name="password"
+                type="password"
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-4 py-3 rounded-lg bg-[#DADDD8]/50 border-2 border-[#8FB339] text-[#4B5842] placeholder-[#4B5842]/50 focus:outline-none focus:ring-2 focus:ring-[#B7CE63] focus:border-transparent"
+                placeholder="Create a password"
+              />
             </div>
 
             <div>
-              <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700">
+              <label htmlFor="confirmPassword" className="block text-sm font-medium text-[#4B5842] mb-2 flex items-center">
+                <CheckBadgeIcon className="w-5 h-5 mr-2 text-[#8FB339]" />
                 Confirm Password
               </label>
-              <div className="mt-1">
-                <input
-                  id="confirmPassword"
-                  name="confirmPassword"
-                  type="password"
-                  required
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="appearance-none block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                />
-              </div>
+              <input
+                id="confirmPassword"
+                name="confirmPassword"
+                type="password"
+                required
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className="w-full px-4 py-3 rounded-lg bg-[#DADDD8]/50 border-2 border-[#8FB339] text-[#4B5842] placeholder-[#4B5842]/50 focus:outline-none focus:ring-2 focus:ring-[#B7CE63] focus:border-transparent"
+                placeholder="Confirm your password"
+              />
             </div>
 
-            <div>
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50"
-              >
-                {isLoading ? 'Creating account...' : 'Create account'}
-              </button>
-            </div>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className={`w-full py-3 px-4 rounded-lg transition flex items-center justify-center font-medium border shadow-md ${
+                isLoading 
+                  ? 'bg-[#4B5842]/50 text-[#C7D59F]/50 border-[#8FB339]/30 cursor-not-allowed' 
+                  : 'bg-[#8FB339] text-white hover:bg-[#B7CE63] border-[#B7CE63]'
+              }`}
+            >
+              {isLoading ? (
+                <>
+                  <ArrowPathIcon className="animate-spin h-5 w-5 mr-2" />
+                  Creating account...
+                </>
+              ) : (
+                <>
+                  <UserPlusIcon className="h-5 w-5 mr-2" />
+                  Create account
+                </>
+              )}
+            </button>
           </form>
+          
+          <div className="mt-6 text-center">
+            <p className="text-[#4B5842]">
+              Already have an account?{' '}
+              <Link href="/login" className="font-medium text-[#8FB339] hover:text-[#B7CE63] transition">
+                Log in here
+              </Link>
+            </p>
+          </div>
         </div>
       </div>
     </div>
